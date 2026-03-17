@@ -1,6 +1,12 @@
-from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QGraphicsView, QGraphicsScene
-from PyQt6.QtCore import Qt, QRectF
+import os
+from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
+                              QLabel, QGraphicsView, QGraphicsScene)
+from PyQt6.QtCore import Qt, QRectF, QUrl
 from PyQt6.QtGui import QPixmap, QWheelEvent, QKeyEvent
+import subprocess
+import sys
+
+VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.wmv', '.flv', '.m4v'}
 
 
 class ImageViewer(QDialog):
@@ -8,10 +14,27 @@ class ImageViewer(QDialog):
         super().__init__(parent)
         self.image_id = image_id
         self.image_path = image_path
-        self.setWindowTitle(image_path.split('\\')[-1].split('/')[-1])
+        self.setWindowTitle(os.path.basename(image_path))
+        ext = os.path.splitext(image_path)[1].lower()
+        if ext in VIDEO_EXTENSIONS:
+            # Open video with the system default player and close this dialog
+            self._open_with_system(image_path)
+            # Schedule close after exec() starts
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, self.close)
+            self.resize(1, 1)
+            return
         self.resize(900, 700)
         self._setup_ui()
         self._load_image()
+
+    def _open_with_system(self, path: str):
+        if sys.platform == 'win32':
+            os.startfile(path)
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', path])
+        else:
+            subprocess.Popen(['xdg-open', path])
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)

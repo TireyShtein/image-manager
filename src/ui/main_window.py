@@ -42,6 +42,7 @@ class MainWindow(QMainWindow):
         self._folder_tree.setMinimumWidth(180)
         self._folder_tree.setMaximumWidth(300)
         self._folder_tree.folder_selected.connect(self._on_folder_selected)
+        self._folder_tree.files_selected.connect(self._on_tree_files_selected)
         splitter.addWidget(self._folder_tree)
 
         # Centre: gallery
@@ -144,6 +145,10 @@ class MainWindow(QMainWindow):
         self._current_folder = folder
         self._gallery.load_folder(folder)
         self._status_label.setText(f"Folder: {folder}")
+
+    def _on_tree_files_selected(self, paths: list[str]):
+        self._gallery.load_paths(paths)
+        self._status_label.setText(f"{len(paths)} file(s) selected in tree")
 
     def _on_image_double_clicked(self, image_id: int):
         row = db.get_image(image_id)

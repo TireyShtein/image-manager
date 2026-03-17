@@ -123,6 +123,21 @@ class GalleryView(QListView):
     def load_images(self, rows):
         self._gallery_model.set_images(rows)
 
+    def load_paths(self, paths: list[str]):
+        """Load raw file paths directly (auto-registers in DB if not present)."""
+        import os
+        rows = []
+        for path in paths:
+            if not os.path.isfile(path):
+                continue
+            row = db.get_image_by_path(path)
+            if not row:
+                image_id = db.add_image(path, os.path.basename(path))
+                row = db.get_image(image_id)
+            if row:
+                rows.append(row)
+        self._gallery_model.set_images(rows)
+
     def _on_double_click(self, index: QModelIndex):
         image_id = self._gallery_model.get_image_id(index.row())
         if image_id is not None:

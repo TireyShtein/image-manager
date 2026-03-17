@@ -1,4 +1,5 @@
 import sys
+import torch  # must be imported before PyQt6 on Windows to avoid DLL path conflicts
 from PyQt6.QtWidgets import QApplication
 from src.ui.main_window import MainWindow
 
