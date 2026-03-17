@@ -138,6 +138,15 @@ def get_all_tags() -> list:
         return conn.execute("SELECT * FROM tags ORDER BY name").fetchall()
 
 
+def get_all_tags_with_counts() -> list:
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT t.name, COUNT(it.image_id) as count "
+            "FROM tags t LEFT JOIN image_tags it ON t.id = it.tag_id "
+            "GROUP BY t.id ORDER BY t.name"
+        ).fetchall()
+
+
 def add_tag_to_image(image_id: int, tag_name: str):
     tag_id = get_or_create_tag(tag_name)
     with get_connection() as conn:

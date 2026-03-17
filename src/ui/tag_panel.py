@@ -60,8 +60,9 @@ class TagPanel(QWidget):
         self._list.clear()
         if not self._selected_image_ids:
             self._selection_label.setText("")
-            for row in db.get_all_tags():
-                item = QListWidgetItem(row["name"])
+            for row in db.get_all_tags_with_counts():
+                item = QListWidgetItem(f"{row['name']} ({row['count']})")
+                item.setData(Qt.ItemDataRole.UserRole, row["name"])
                 item.setToolTip("Click to filter gallery by this tag")
                 self._list.addItem(item)
         else:
@@ -88,10 +89,11 @@ class TagPanel(QWidget):
         item = self._list.currentItem()
         if not item or not self._selected_image_ids:
             return
-        tag_name = item.text()
+        tag_name = item.data(Qt.ItemDataRole.UserRole) or item.text()
         for image_id in self._selected_image_ids:
             db.remove_tag_from_image(image_id, tag_name)
         self.refresh()
 
     def _on_tag_clicked(self, item: QListWidgetItem):
-        self.tag_filter_changed.emit(item.text())
+        tag_name = item.data(Qt.ItemDataRole.UserRole) or item.text()
+        self.tag_filter_changed.emit(tag_name)

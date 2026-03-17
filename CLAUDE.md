@@ -51,6 +51,15 @@ SQLite with WAL journal mode and foreign keys enabled. Tables: `images`, `tags`,
 ### Gallery loading
 `GalleryView.load_folder(folder)` reads the filesystem directly (non-recursive) and auto-registers new files in the DB. This means no prior scan is needed to browse a folder. `load_paths(paths)` does the same for a list of individual files (used when files are selected directly in the tree).
 
+### Thumbnail auto-sizing
+`GalleryView` dynamically resizes thumbnails based on image count via `_compute_thumb_size(count)` and `_SIZE_TIERS` (≤4→300px … 500+→70px). `GalleryModel` stores both `source_pix` (full 256px from cache) and `display_pix` (scaled to current display size) so re-scaling is in-memory only — no disk re-read.
+
+### Folder tree scoping
+`FolderTree.set_root(path)` restricts the tree's visible root to a single folder (`setRootIndex`). Called by `MainWindow._open_folder()` and `_restore_last_folder()`. `navigate_to(path)` scrolls/selects without changing the root.
+
+### Persistent last folder
+`MainWindow` uses `QSettings("ImageManager", "ImageManager")` (Windows registry) to save and restore `last_folder`. On launch, `_restore_last_folder()` reloads the tree and gallery if the stored path still exists on disk.
+
 ### Media type definitions
 Image extensions live in `src/core/image_scanner.py:SUPPORTED_EXTENSIONS`. Video extensions live in `src/core/thumbnail_cache.py:VIDEO_EXTENSIONS`. Both sets are combined in `folder_tree.py` and `gallery_view.py`.
 

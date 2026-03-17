@@ -164,6 +164,7 @@ class GalleryView(QListView):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._gallery_model = GalleryModel(self)
+        self._empty_text = "No media in this folder"
         self.setModel(self._gallery_model)
         self.setViewMode(QListView.ViewMode.IconMode)
         self.setResizeMode(QListView.ResizeMode.Adjust)
@@ -194,6 +195,7 @@ class GalleryView(QListView):
         self._refresh_size()
 
     def load_folder(self, folder: str):
+        self._empty_text = "No media in this folder"
         from src.core.thumbnail_cache import VIDEO_EXTENSIONS
         from src.core.image_scanner import SUPPORTED_EXTENSIONS
         media_exts = SUPPORTED_EXTENSIONS | VIDEO_EXTENSIONS
@@ -215,8 +217,11 @@ class GalleryView(QListView):
                 rows.append(row)
         self._load_rows(rows)
 
-    def load_images(self, rows):
-        self._load_rows(rows)
+    def load_images(self, rows, empty_text: str = "No images match this filter") -> int:
+        self._empty_text = empty_text
+        valid_rows = [r for r in rows if os.path.isfile(r["path"])]
+        self._load_rows(valid_rows)
+        return len(valid_rows)
 
     def load_paths(self, paths: list[str]):
         rows = []
@@ -260,7 +265,7 @@ class GalleryView(QListView):
             painter.drawText(
                 self.viewport().rect(),
                 Qt.AlignmentFlag.AlignCenter,
-                "No images in this folder"
+                self._empty_text
             )
 
     def image_count(self) -> int:

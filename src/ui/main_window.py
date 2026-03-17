@@ -22,6 +22,7 @@ class MainWindow(QMainWindow):
         self._current_folder: str | None = None
         self._classifier_worker: ClassifierWorker | None = None
         self._settings = QSettings("ImageManager", "ImageManager")
+        self._status_prefix = "Ready"
         db.init_db()
         self._build_ui()
         self._build_menu()
@@ -136,17 +137,19 @@ class MainWindow(QMainWindow):
         if folder and os.path.isdir(folder):
             self._current_folder = folder
             self._folder_tree.set_root(folder)
+            self._status_prefix = f"Folder: {folder}"
             self._gallery.load_folder(folder)
-            self._status_label.setText(f"Folder: {folder}")
+            self._status_label.setText(self._status_prefix)
             self._update_go_up_button()
 
     def _open_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Open Folder")
         if folder:
             self._current_folder = folder
+            self._status_prefix = f"Folder: {folder}"
             self._gallery.load_folder(folder)
             self._folder_tree.set_root(folder)
-            self._status_label.setText(f"Folder: {folder}")
+            self._status_label.setText(self._status_prefix)
             self._settings.setValue("last_folder", folder)
             self._update_go_up_button()
 
@@ -157,9 +160,10 @@ class MainWindow(QMainWindow):
         if not parent or parent == self._current_folder:
             return
         self._current_folder = parent
+        self._status_prefix = f"Folder: {parent}"
         self._folder_tree.set_root(parent)
         self._gallery.load_folder(parent)
-        self._status_label.setText(f"Folder: {parent}")
+        self._status_label.setText(self._status_prefix)
         self._settings.setValue("last_folder", parent)
         self._update_go_up_button()
 
@@ -192,8 +196,9 @@ class MainWindow(QMainWindow):
 
     def _on_folder_selected(self, folder: str):
         self._current_folder = folder
+        self._status_prefix = f"Folder: {folder}"
         self._gallery.load_folder(folder)
-        self._status_label.setText(f"Folder: {folder}")
+        self._status_label.setText(self._status_prefix)
         self._settings.setValue("last_folder", folder)
         self._update_go_up_button()
 
@@ -202,12 +207,13 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"{len(paths)} file(s) selected in tree")
 
     def _on_thumbnails_loading(self, loaded: int, total: int):
-        folder = self._current_folder or ""
-        self._status_label.setText(f"Folder: {folder} — Loading {loaded}/{total}…")
+        self._status_label.setText(f"{self._status_prefix} — Loading {loaded}/{total}…")
 
     def _on_thumbnails_ready(self, count: int):
-        folder = self._current_folder or ""
-        self._status_label.setText(f"Folder: {folder} ({count} images)")
+        if self._status_prefix.startswith("Folder:"):
+            self._status_label.setText(f"{self._status_prefix} ({count} images)")
+        else:
+            self._status_label.setText(self._status_prefix)
 
     def _make_image_nav_list(self) -> list[tuple[int, str]]:
         return [(iid, p) for iid, p in self._gallery.get_all_items()
@@ -231,16 +237,23 @@ class MainWindow(QMainWindow):
     def _on_tag_filter(self, tag_name: str):
         if tag_name:
             rows = db.get_images_by_tag(tag_name)
-            self._gallery.load_images(rows)
-            self._status_label.setText(f"Tag filter: {tag_name} ({len(rows)} images)")
+            shown = self._gallery.load_images(rows, empty_text=f"No images with tag '{tag_name}' found on disk")
+            missing = len(rows) - shown
+            suffix = f", {missing} missing from disk" if missing else ""
+            self._status_prefix = f"Tag filter: {tag_name} ({shown} images{suffix})"
+            self._status_label.setText(self._status_prefix)
         elif self._current_folder:
+            self._status_prefix = f"Folder: {self._current_folder}"
             self._gallery.load_folder(self._current_folder)
 
     def _on_album_selected(self, album_id: int):
         rows = db.get_images_in_album(album_id)
-        self._gallery.load_images(rows)
         album = db.get_album(album_id)
-        self._status_label.setText(f"Album: {album['name']} ({len(rows)} images)")
+        shown = self._gallery.load_images(rows, empty_text=f"No images in album '{album['name']}' found on disk")
+        missing = len(rows) - shown
+        suffix = f", {missing} missing from disk" if missing else ""
+        self._status_prefix = f"Album: {album['name']} ({shown} images{suffix})"
+        self._status_label.setText(self._status_prefix)
 
     def _on_empty_gallery_context_menu(self, pos):
         menu = QMenu(self)
