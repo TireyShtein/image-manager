@@ -28,7 +28,9 @@ def _compute_thumb_size(count: int) -> int:
 
 
 class ThumbnailSignals(QObject):
-    loaded = pyqtSignal(int, str)  # (image_id, thumb_path)
+    loaded = pyqtSignal(int, str)   # (image_id, thumb_path)
+    progress = pyqtSignal(int, int) # (loaded_count, total_count)
+    all_loaded = pyqtSignal()
 
 
 class ThumbnailLoader(QRunnable):
@@ -56,14 +58,24 @@ class GalleryModel(QAbstractListModel):
         self._pool = QThreadPool.globalInstance()
         self._signals = ThumbnailSignals()
         self._signals.loaded.connect(self._on_thumbnail_loaded)
+        self._total: int = 0
+        self._loaded: int = 0
 
     def set_images(self, rows):
         self.beginResetModel()
         self._items = [{"id": r["id"], "path": r["path"],
                         "source_pix": None, "display_pix": None} for r in rows]
         self._id_index = {item["id"]: i for i, item in enumerate(self._items)}
+        self._total = len(self._items)
+        self._loaded = 0
         self.endResetModel()
-        self._start_loading()
+        if self._total == 0:
+            self._signals.all_loaded.emit()
+        else:
+            self._start_loading()
+
+    def get_all_items(self) -> list[tuple[int, str]]:
+        return [(item["id"], item["path"]) for item in self._items]
 
     def set_display_size(self, size: int):
         if size == self._display_size:
@@ -101,6 +113,10 @@ class GalleryModel(QAbstractListModel):
         self._items[idx]["display_pix"] = self._scale(source)
         index = self.index(idx)
         self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
+        self._loaded += 1
+        self._signals.progress.emit(self._loaded, self._total)
+        if self._loaded == self._total:
+            self._signals.all_loaded.emit()
 
     def rowCount(self, parent=QModelIndex()) -> int:
         return len(self._items)
@@ -141,6 +157,9 @@ class GalleryView(QListView):
     image_double_clicked = pyqtSignal(int)
     selection_changed = pyqtSignal(list)
     context_menu_requested = pyqtSignal(list, object)
+    empty_context_menu_requested = pyqtSignal(object)  # global pos
+    thumbnails_loading = pyqtSignal(int, int)  # (loaded, total)
+    thumbnails_ready = pyqtSignal(int)          # total count
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -155,6 +174,10 @@ class GalleryView(QListView):
         self.doubleClicked.connect(self._on_double_click)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._on_context_menu)
+        self._gallery_model._signals.progress.connect(self.thumbnails_loading)
+        self._gallery_model._signals.all_loaded.connect(
+            lambda: self.thumbnails_ready.emit(self._gallery_model.count())
+        )
 
     def _apply_size(self, thumb_px: int):
         padding = 24  # room for filename label below thumb
@@ -225,6 +248,26 @@ class GalleryView(QListView):
         ids = self.get_selected_ids()
         if ids:
             self.context_menu_requested.emit(ids, self.viewport().mapToGlobal(pos))
+        else:
+            self.empty_context_menu_requested.emit(self.viewport().mapToGlobal(pos))
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._gallery_model.rowCount() == 0:
+            from PyQt6.QtGui import QPainter
+            painter = QPainter(self.viewport())
+            painter.setPen(Qt.GlobalColor.gray)
+            painter.drawText(
+                self.viewport().rect(),
+                Qt.AlignmentFlag.AlignCenter,
+                "No images in this folder"
+            )
+
+    def image_count(self) -> int:
+        return self._gallery_model.count()
+
+    def get_all_items(self) -> list[tuple[int, str]]:
+        return self._gallery_model.get_all_items()
 
     def remove_image(self, image_id: int):
         self._gallery_model.remove_image(image_id)

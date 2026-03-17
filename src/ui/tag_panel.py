@@ -17,9 +17,13 @@ class TagPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        layout.addWidget(QLabel("<b>Tags</b>"))
+        layout.addWidget(QLabel("<b>Tags</b> — click to filter"))
 
         self._list = QListWidget()
+        self._list.setStyleSheet(
+            "QListWidget::item:hover { background: #dde8ff; }"
+            "QListWidget::item:selected { background: #b8d0ff; }"
+        )
         self._list.itemClicked.connect(self._on_tag_clicked)
         layout.addWidget(self._list)
 
@@ -53,12 +57,16 @@ class TagPanel(QWidget):
         if not self._selected_image_ids:
             # Show all tags when nothing selected
             for row in db.get_all_tags():
-                self._list.addItem(QListWidgetItem(row["name"]))
+                item = QListWidgetItem(row["name"])
+                item.setToolTip("Click to filter gallery by this tag")
+                self._list.addItem(item)
         else:
             # Show tags for the first selected image
             tags = db.get_tags_for_image(self._selected_image_ids[0])
             for name in tags:
-                self._list.addItem(QListWidgetItem(name))
+                item = QListWidgetItem(name)
+                item.setToolTip("Click to filter gallery by this tag")
+                self._list.addItem(item)
 
     def _add_tag(self):
         name = self._tag_input.text().strip()

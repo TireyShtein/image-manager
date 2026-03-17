@@ -45,6 +45,10 @@ class AlbumPanel(QWidget):
         btn_remove_imgs.clicked.connect(self._remove_images_from_album)
         layout.addWidget(btn_remove_imgs)
 
+        btn_rename = QPushButton("Rename album")
+        btn_rename.clicked.connect(self._rename_album)
+        layout.addWidget(btn_rename)
+
         btn_delete = QPushButton("Delete album")
         btn_delete.clicked.connect(self._delete_album)
         layout.addWidget(btn_delete)
@@ -85,6 +89,17 @@ class AlbumPanel(QWidget):
         for image_id in self._selected_image_ids:
             db.remove_image_from_album(album_id, image_id)
         self.refresh()
+
+    def _rename_album(self):
+        item = self._list.currentItem()
+        if not item:
+            return
+        album_id = item.data(Qt.ItemDataRole.UserRole)
+        current_name = item.text().split(" (")[0]
+        new_name, ok = QInputDialog.getText(self, "Rename Album", "New name:", text=current_name)
+        if ok and new_name.strip() and new_name.strip() != current_name:
+            db.rename_album(album_id, new_name.strip())
+            self.refresh()
 
     def _delete_album(self):
         item = self._list.currentItem()

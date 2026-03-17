@@ -10,10 +10,13 @@ VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.wmv', '.flv', '.m
 
 
 class ImageViewer(QDialog):
-    def __init__(self, image_id: int, image_path: str, parent=None):
+    def __init__(self, image_id: int, image_path: str, parent=None,
+                 all_images: list[tuple[int, str]] | None = None, current_index: int = 0):
         super().__init__(parent)
         self.image_id = image_id
         self.image_path = image_path
+        self._all_images = all_images or []
+        self._current_index = current_index
         self.setWindowTitle(os.path.basename(image_path))
         ext = os.path.splitext(image_path)[1].lower()
         if ext in VIDEO_EXTENSIONS:
@@ -45,9 +48,23 @@ class ImageViewer(QDialog):
 
         bar = QHBoxLayout()
         bar.setContentsMargins(8, 4, 8, 4)
+
+        has_nav = len(self._all_images) > 1
+        self._btn_prev = QPushButton("←")
+        self._btn_prev.setFixedWidth(36)
+        self._btn_prev.setEnabled(has_nav)
+        self._btn_prev.clicked.connect(lambda: self._navigate(-1))
+        bar.addWidget(self._btn_prev)
+
         self._path_label = QLabel(self.image_path)
         self._path_label.setStyleSheet("color: gray; font-size: 11px;")
         bar.addWidget(self._path_label, 1)
+
+        self._btn_next = QPushButton("→")
+        self._btn_next.setFixedWidth(36)
+        self._btn_next.setEnabled(has_nav)
+        self._btn_next.clicked.connect(lambda: self._navigate(1))
+        bar.addWidget(self._btn_next)
 
         btn_fit = QPushButton("Fit")
         btn_fit.setFixedWidth(60)
@@ -68,6 +85,23 @@ class ImageViewer(QDialog):
         self._view.setScene(scene)
         self._view.setSceneRect(QRectF(pixmap.rect()))
         self._fit()
+
+    def _navigate(self, delta: int):
+        if not self._all_images:
+            return
+        self._current_index = (self._current_index + delta) % len(self._all_images)
+        self.image_id, self.image_path = self._all_images[self._current_index]
+        self.setWindowTitle(os.path.basename(self.image_path))
+        self._path_label.setText(self.image_path)
+        self._load_image()
+
+    def keyPressEvent(self, event: QKeyEvent):
+        if event.key() == Qt.Key.Key_Left:
+            self._navigate(-1)
+        elif event.key() == Qt.Key.Key_Right:
+            self._navigate(1)
+        else:
+            super().keyPressEvent(event)
 
     def _fit(self):
         self._view.fitInView(self._view.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
@@ -93,5 +127,7 @@ class ZoomableGraphicsView(QGraphicsView):
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key.Key_Escape:
             self.parent().close()
+        elif event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            self.parent().keyPressEvent(event)
         else:
             super().keyPressEvent(event)

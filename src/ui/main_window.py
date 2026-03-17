@@ -1,5 +1,5 @@
 import os
-from PyQt6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
+from PyQt6.QtWidgets import (QMainWindow, QPushButton, QWidget, QHBoxLayout, QVBoxLayout,
                               QSplitter, QStatusBar, QProgressBar, QLabel,
                               QFileDialog, QMessageBox, QInputDialog, QMenu,
                               QToolBar)
@@ -7,7 +7,7 @@ from PyQt6.QtCore import Qt, QThread, QSettings
 from PyQt6.QtGui import QAction
 from src.ui.folder_tree import FolderTree
 from src.ui.gallery_view import GalleryView
-from src.ui.image_viewer import ImageViewer
+from src.ui.image_viewer import ImageViewer, VIDEO_EXTENSIONS
 from src.ui.tag_panel import TagPanel
 from src.ui.album_panel import AlbumPanel
 from src.core import database as db, image_scanner, file_ops
@@ -39,19 +39,34 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         root_layout.addWidget(splitter)
 
-        # Left: folder tree
+        # Left: go-up button + folder tree
+        left = QWidget()
+        left.setMinimumWidth(180)
+        left.setMaximumWidth(300)
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
+
+        self._btn_go_up = QPushButton("↑ Go Up")
+        self._btn_go_up.setFixedHeight(26)
+        self._btn_go_up.setEnabled(False)
+        self._btn_go_up.clicked.connect(self._go_up_folder)
+        left_layout.addWidget(self._btn_go_up)
+
         self._folder_tree = FolderTree()
-        self._folder_tree.setMinimumWidth(180)
-        self._folder_tree.setMaximumWidth(300)
         self._folder_tree.folder_selected.connect(self._on_folder_selected)
         self._folder_tree.files_selected.connect(self._on_tree_files_selected)
-        splitter.addWidget(self._folder_tree)
+        left_layout.addWidget(self._folder_tree)
+        splitter.addWidget(left)
 
         # Centre: gallery
         self._gallery = GalleryView()
         self._gallery.image_double_clicked.connect(self._on_image_double_clicked)
         self._gallery.context_menu_requested.connect(self._on_context_menu)
         self._gallery.selectionModel().selectionChanged.connect(self._on_selection_changed)
+        self._gallery.thumbnails_loading.connect(self._on_thumbnails_loading)
+        self._gallery.thumbnails_ready.connect(self._on_thumbnails_ready)
+        self._gallery.empty_context_menu_requested.connect(self._on_empty_gallery_context_menu)
         splitter.addWidget(self._gallery)
 
         # Right: tag + album panels stacked
@@ -123,6 +138,7 @@ class MainWindow(QMainWindow):
             self._folder_tree.set_root(folder)
             self._gallery.load_folder(folder)
             self._status_label.setText(f"Folder: {folder}")
+            self._update_go_up_button()
 
     def _open_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Open Folder")
@@ -132,6 +148,27 @@ class MainWindow(QMainWindow):
             self._folder_tree.set_root(folder)
             self._status_label.setText(f"Folder: {folder}")
             self._settings.setValue("last_folder", folder)
+            self._update_go_up_button()
+
+    def _go_up_folder(self):
+        if not self._current_folder:
+            return
+        parent = os.path.dirname(self._current_folder)
+        if not parent or parent == self._current_folder:
+            return
+        self._current_folder = parent
+        self._folder_tree.set_root(parent)
+        self._gallery.load_folder(parent)
+        self._status_label.setText(f"Folder: {parent}")
+        self._settings.setValue("last_folder", parent)
+        self._update_go_up_button()
+
+    def _update_go_up_button(self):
+        if self._current_folder:
+            parent = os.path.dirname(self._current_folder)
+            self._btn_go_up.setEnabled(bool(parent) and parent != self._current_folder)
+        else:
+            self._btn_go_up.setEnabled(False)
 
     def _scan_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Scan Folder into Library")
@@ -156,16 +193,32 @@ class MainWindow(QMainWindow):
         self._current_folder = folder
         self._gallery.load_folder(folder)
         self._status_label.setText(f"Folder: {folder}")
+        self._settings.setValue("last_folder", folder)
+        self._update_go_up_button()
 
     def _on_tree_files_selected(self, paths: list[str]):
         self._gallery.load_paths(paths)
         self._status_label.setText(f"{len(paths)} file(s) selected in tree")
 
+    def _on_thumbnails_loading(self, loaded: int, total: int):
+        folder = self._current_folder or ""
+        self._status_label.setText(f"Folder: {folder} — Loading {loaded}/{total}…")
+
+    def _on_thumbnails_ready(self, count: int):
+        folder = self._current_folder or ""
+        self._status_label.setText(f"Folder: {folder} ({count} images)")
+
+    def _make_image_nav_list(self) -> list[tuple[int, str]]:
+        return [(iid, p) for iid, p in self._gallery.get_all_items()
+                if os.path.splitext(p)[1].lower() not in VIDEO_EXTENSIONS]
+
     def _on_image_double_clicked(self, image_id: int):
         row = db.get_image(image_id)
-        if row:
-            viewer = ImageViewer(image_id, row["path"], self)
-            viewer.exec()
+        if not row:
+            return
+        nav = self._make_image_nav_list()
+        idx = next((i for i, (iid, _) in enumerate(nav) if iid == image_id), 0)
+        ImageViewer(image_id, row["path"], self, all_images=nav, current_index=idx).exec()
 
     def _on_selection_changed(self, selected, deselected):
         ids = self._gallery.get_selected_ids()
@@ -188,6 +241,12 @@ class MainWindow(QMainWindow):
         album = db.get_album(album_id)
         self._status_label.setText(f"Album: {album['name']} ({len(rows)} images)")
 
+    def _on_empty_gallery_context_menu(self, pos):
+        menu = QMenu(self)
+        menu.addAction("Open Folder…", self._open_folder)
+        menu.addAction("Scan Folder into Library", self._scan_folder)
+        menu.exec(pos)
+
     def _on_context_menu(self, image_ids: list[int], pos):
         menu = QMenu(self)
         menu.addAction("View", lambda: self._view_image(image_ids[0]))
@@ -201,8 +260,11 @@ class MainWindow(QMainWindow):
 
     def _view_image(self, image_id: int):
         row = db.get_image(image_id)
-        if row:
-            ImageViewer(image_id, row["path"], self).exec()
+        if not row:
+            return
+        nav = self._make_image_nav_list()
+        idx = next((i for i, (iid, _) in enumerate(nav) if iid == image_id), 0)
+        ImageViewer(image_id, row["path"], self, all_images=nav, current_index=idx).exec()
 
     def _move_images(self, image_ids: list[int]):
         dest = QFileDialog.getExistingDirectory(self, "Move to Folder")
@@ -262,7 +324,21 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Busy", "Classification already running.")
             return
 
-        # Ask for SFW/NSFW destination folders
+        # Explain what is about to happen before asking for folders
+        reply = QMessageBox.information(
+            self, "AI Classification",
+            f"About to classify {len(image_ids)} image(s).\n\n"
+            "Step 1 — NSFW detection: images are sorted into a Safe (SFW) or "
+            "Not-Safe-For-Work (NSFW) folder.\n"
+            "Step 2 — Content tagging: top-3 ImageNet labels are added as tags.\n\n"
+            "You will now be asked to choose:\n"
+            "  • A destination folder for SFW images\n"
+            "  • A destination folder for NSFW images",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Ok:
+            return
+
         sfw_folder = QFileDialog.getExistingDirectory(self, "Select SFW destination folder")
         if not sfw_folder:
             return
