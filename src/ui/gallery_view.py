@@ -1,12 +1,30 @@
 import os
-from PyQt6.QtWidgets import QListView, QAbstractItemView, QMenu
+from PyQt6.QtWidgets import QListView, QAbstractItemView
 from PyQt6.QtCore import (Qt, QAbstractListModel, QModelIndex, QSize,
                            QRunnable, QThreadPool, pyqtSignal, QObject, pyqtSlot)
-from PyQt6.QtGui import QPixmap, QIcon
+from PyQt6.QtGui import QPixmap
 from src.core import thumbnail_cache, database as db
 
-THUMB_SIZE = 160
-ITEM_SIZE = 180
+# Maximum size stored in the thumbnail cache on disk
+CACHE_THUMB_SIZE = 256
+
+# Size tiers: (max_count, thumb_px)
+_SIZE_TIERS = [
+    (4,    300),
+    (12,   240),
+    (30,   180),
+    (80,   140),
+    (200,  110),
+    (500,   85),
+]
+_MIN_THUMB_SIZE = 70
+
+
+def _compute_thumb_size(count: int) -> int:
+    for max_count, size in _SIZE_TIERS:
+        if count <= max_count:
+            return size
+    return _MIN_THUMB_SIZE
 
 
 class ThumbnailSignals(QObject):
@@ -31,18 +49,43 @@ class ThumbnailLoader(QRunnable):
 class GalleryModel(QAbstractListModel):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._items: list[dict] = []   # {"id": int, "path": str, "pixmap": QPixmap|None}
+        # Each item: {"id", "path", "source_pix": QPixmap|None, "display_pix": QPixmap|None}
+        self._items: list[dict] = []
         self._id_index: dict[int, int] = {}
+        self._display_size: int = _compute_thumb_size(0)
         self._pool = QThreadPool.globalInstance()
         self._signals = ThumbnailSignals()
         self._signals.loaded.connect(self._on_thumbnail_loaded)
 
     def set_images(self, rows):
         self.beginResetModel()
-        self._items = [{"id": r["id"], "path": r["path"], "pixmap": None} for r in rows]
+        self._items = [{"id": r["id"], "path": r["path"],
+                        "source_pix": None, "display_pix": None} for r in rows]
         self._id_index = {item["id"]: i for i, item in enumerate(self._items)}
         self.endResetModel()
         self._start_loading()
+
+    def set_display_size(self, size: int):
+        if size == self._display_size:
+            return
+        self._display_size = size
+        # Re-scale all already-loaded pixmaps
+        for item in self._items:
+            if item["source_pix"] is not None:
+                item["display_pix"] = self._scale(item["source_pix"])
+        if self._items:
+            self.dataChanged.emit(
+                self.index(0),
+                self.index(len(self._items) - 1),
+                [Qt.ItemDataRole.DecorationRole]
+            )
+
+    def _scale(self, pix: QPixmap) -> QPixmap:
+        return pix.scaled(
+            self._display_size, self._display_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
 
     def _start_loading(self):
         for item in self._items:
@@ -53,11 +96,9 @@ class GalleryModel(QAbstractListModel):
         idx = self._id_index.get(image_id)
         if idx is None:
             return
-        pix = QPixmap(thumb_path).scaled(
-            THUMB_SIZE, THUMB_SIZE, Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-        self._items[idx]["pixmap"] = pix
+        source = QPixmap(thumb_path)
+        self._items[idx]["source_pix"] = source
+        self._items[idx]["display_pix"] = self._scale(source)
         index = self.index(idx)
         self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
 
@@ -69,9 +110,7 @@ class GalleryModel(QAbstractListModel):
             return None
         item = self._items[index.row()]
         if role == Qt.ItemDataRole.DecorationRole:
-            if item["pixmap"]:
-                return item["pixmap"]
-            return QPixmap(THUMB_SIZE, THUMB_SIZE)  # placeholder
+            return item["display_pix"] or QPixmap(self._display_size, self._display_size)
         if role == Qt.ItemDataRole.DisplayRole:
             return os.path.basename(item["path"])
         if role == Qt.ItemDataRole.ToolTipRole:
@@ -91,15 +130,17 @@ class GalleryModel(QAbstractListModel):
             return
         self.beginRemoveRows(QModelIndex(), idx, idx)
         self._items.pop(idx)
-        # Rebuild index
         self._id_index = {item["id"]: i for i, item in enumerate(self._items)}
         self.endRemoveRows()
 
+    def count(self) -> int:
+        return len(self._items)
+
 
 class GalleryView(QListView):
-    image_double_clicked = pyqtSignal(int)   # image_id
-    selection_changed = pyqtSignal(list)     # list of image_ids
-    context_menu_requested = pyqtSignal(list, object)  # image_ids, QPoint
+    image_double_clicked = pyqtSignal(int)
+    selection_changed = pyqtSignal(list)
+    context_menu_requested = pyqtSignal(list, object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -107,14 +148,27 @@ class GalleryView(QListView):
         self.setModel(self._gallery_model)
         self.setViewMode(QListView.ViewMode.IconMode)
         self.setResizeMode(QListView.ResizeMode.Adjust)
-        self.setGridSize(QSize(ITEM_SIZE, ITEM_SIZE + 20))
-        self.setIconSize(QSize(THUMB_SIZE, THUMB_SIZE))
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setUniformItemSizes(True)
         self.setSpacing(4)
+        self._apply_size(_compute_thumb_size(0))
         self.doubleClicked.connect(self._on_double_click)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._on_context_menu)
+
+    def _apply_size(self, thumb_px: int):
+        padding = 24  # room for filename label below thumb
+        self.setIconSize(QSize(thumb_px, thumb_px))
+        self.setGridSize(QSize(thumb_px + 8, thumb_px + padding))
+        self._gallery_model.set_display_size(thumb_px)
+
+    def _refresh_size(self):
+        count = self._gallery_model.count()
+        self._apply_size(_compute_thumb_size(count))
+
+    def _load_rows(self, rows):
+        self._gallery_model.set_images(rows)
+        self._refresh_size()
 
     def load_folder(self, folder: str):
         from src.core.thumbnail_cache import VIDEO_EXTENSIONS
@@ -136,14 +190,12 @@ class GalleryView(QListView):
                 row = db.get_image(image_id)
             if row:
                 rows.append(row)
-        self._gallery_model.set_images(rows)
+        self._load_rows(rows)
 
     def load_images(self, rows):
-        self._gallery_model.set_images(rows)
+        self._load_rows(rows)
 
     def load_paths(self, paths: list[str]):
-        """Load raw file paths directly (auto-registers in DB if not present)."""
-        import os
         rows = []
         for path in paths:
             if not os.path.isfile(path):
@@ -154,7 +206,7 @@ class GalleryView(QListView):
                 row = db.get_image(image_id)
             if row:
                 rows.append(row)
-        self._gallery_model.set_images(rows)
+        self._load_rows(rows)
 
     def _on_double_click(self, index: QModelIndex):
         image_id = self._gallery_model.get_image_id(index.row())
@@ -169,10 +221,6 @@ class GalleryView(QListView):
                 ids.append(image_id)
         return ids
 
-    def selectionModel(self):
-        sm = super().selectionModel()
-        return sm
-
     def _on_context_menu(self, pos):
         ids = self.get_selected_ids()
         if ids:
@@ -180,3 +228,4 @@ class GalleryView(QListView):
 
     def remove_image(self, image_id: int):
         self._gallery_model.remove_image(image_id)
+        self._refresh_size()
