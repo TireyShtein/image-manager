@@ -28,6 +28,7 @@ class ImageViewer(QDialog):
             self.resize(1, 1)
             return
         self.resize(900, 700)
+        self._fit_mode = True
         self._setup_ui()
         self._load_image()
 
@@ -66,6 +67,16 @@ class ImageViewer(QDialog):
         self._btn_next.clicked.connect(lambda: self._navigate(1))
         bar.addWidget(self._btn_next)
 
+        self._meta_label = QLabel("")
+        self._meta_label.setStyleSheet("color: gray; font-size: 11px;")
+        bar.addWidget(self._meta_label)
+
+        self._zoom_label = QLabel("Fit")
+        self._zoom_label.setFixedWidth(52)
+        self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._zoom_label.setStyleSheet("color: gray; font-size: 11px;")
+        bar.addWidget(self._zoom_label)
+
         btn_fit = QPushButton("Fit")
         btn_fit.setFixedWidth(60)
         btn_fit.clicked.connect(self._fit)
@@ -77,6 +88,7 @@ class ImageViewer(QDialog):
         bar.addWidget(btn_100)
 
         layout.addLayout(bar)
+        self._view._zoom_callback = self._on_zoom_changed
 
     def _load_image(self):
         pixmap = QPixmap(self.image_path)
@@ -84,7 +96,30 @@ class ImageViewer(QDialog):
         scene.addPixmap(pixmap)
         self._view.setScene(scene)
         self._view.setSceneRect(QRectF(pixmap.rect()))
+        # Metadata
+        w, h = pixmap.width(), pixmap.height()
+        try:
+            size_b = os.path.getsize(self.image_path)
+            size_str = f"{size_b / (1024*1024):.1f} MB" if size_b >= 1024*1024 else f"{size_b // 1024} KB"
+        except OSError:
+            size_str = "?"
+        self._meta_label.setText(f"{w}×{h}  {size_str}")
+        self._fit_mode = True
         self._fit()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if hasattr(self, '_view'):
+            self._fit()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, '_view') and self._view.scene() and self._fit_mode:
+            self._fit()
+
+    def _on_zoom_changed(self, zoom: float):
+        self._zoom_label.setText(f"{int(zoom * 100)}%")
+        self._fit_mode = False
 
     def _navigate(self, delta: int):
         if not self._all_images:
@@ -105,9 +140,16 @@ class ImageViewer(QDialog):
 
     def _fit(self):
         self._view.fitInView(self._view.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        zoom = self._view.transform().m11()
+        self._view._zoom = zoom
+        self._zoom_label.setText(f"{int(zoom * 100)}%")
+        self._fit_mode = True
 
     def _actual_size(self):
         self._view.resetTransform()
+        self._view._zoom = 1.0
+        self._zoom_label.setText("100%")
+        self._fit_mode = False
 
 
 class ZoomableGraphicsView(QGraphicsView):
@@ -117,12 +159,15 @@ class ZoomableGraphicsView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self._zoom = 1.0
+        self._zoom_callback = None  # set by ImageViewer after _setup_ui
 
     def wheelEvent(self, event: QWheelEvent):
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
         self._zoom *= factor
         self._zoom = max(0.05, min(self._zoom, 50.0))
         self.scale(factor, factor)
+        if self._zoom_callback:
+            self._zoom_callback(self._zoom)
 
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key.Key_Escape:

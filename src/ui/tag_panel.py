@@ -19,6 +19,10 @@ class TagPanel(QWidget):
 
         layout.addWidget(QLabel("<b>Tags</b> — click to filter"))
 
+        self._selection_label = QLabel("")
+        self._selection_label.setStyleSheet("color: gray; font-size: 11px;")
+        layout.addWidget(self._selection_label)
+
         self._list = QListWidget()
         self._list.setStyleSheet(
             "QListWidget::item:hover { background: #dde8ff; }"
@@ -55,13 +59,16 @@ class TagPanel(QWidget):
     def refresh(self):
         self._list.clear()
         if not self._selected_image_ids:
-            # Show all tags when nothing selected
+            self._selection_label.setText("")
             for row in db.get_all_tags():
                 item = QListWidgetItem(row["name"])
                 item.setToolTip("Click to filter gallery by this tag")
                 self._list.addItem(item)
         else:
-            # Show tags for the first selected image
+            n = len(self._selected_image_ids)
+            self._selection_label.setText(
+                f"Showing tags for image 1 of {n} selected" if n > 1 else ""
+            )
             tags = db.get_tags_for_image(self._selected_image_ids[0])
             for name in tags:
                 item = QListWidgetItem(name)

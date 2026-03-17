@@ -2,7 +2,7 @@ import os
 from PyQt6.QtWidgets import (QMainWindow, QPushButton, QWidget, QHBoxLayout, QVBoxLayout,
                               QSplitter, QStatusBar, QProgressBar, QLabel,
                               QFileDialog, QMessageBox, QInputDialog, QMenu,
-                              QToolBar)
+                              QApplication)
 from PyQt6.QtCore import Qt, QThread, QSettings
 from PyQt6.QtGui import QAction
 from src.ui.folder_tree import FolderTree
@@ -182,6 +182,7 @@ class MainWindow(QMainWindow):
             if total:
                 self._progress.setRange(0, total)
                 self._progress.setValue(current)
+            QApplication.processEvents()
 
         added = image_scanner.scan_folder(folder, progress_cb)
         self._progress.setVisible(False)
@@ -225,7 +226,7 @@ class MainWindow(QMainWindow):
         self._tag_panel.set_selected_images(ids)
         self._album_panel.set_selected_images(ids)
         count = len(ids)
-        self._selected_label.setText(f"{count} selected" if count else "")
+        self._selected_label.setText(f"{count} selected")
 
     def _on_tag_filter(self, tag_name: str):
         if tag_name:
