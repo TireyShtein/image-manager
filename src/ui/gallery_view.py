@@ -117,7 +117,25 @@ class GalleryView(QListView):
         self.customContextMenuRequested.connect(self._on_context_menu)
 
     def load_folder(self, folder: str):
-        rows = db.get_images_in_folder(folder)
+        from src.core.thumbnail_cache import VIDEO_EXTENSIONS
+        from src.core.image_scanner import SUPPORTED_EXTENSIONS
+        media_exts = SUPPORTED_EXTENSIONS | VIDEO_EXTENSIONS
+        paths = []
+        try:
+            for name in os.listdir(folder):
+                full = os.path.join(folder, name)
+                if os.path.isfile(full) and os.path.splitext(name)[1].lower() in media_exts:
+                    paths.append(full)
+        except PermissionError:
+            pass
+        rows = []
+        for path in sorted(paths, key=lambda p: os.path.basename(p).lower()):
+            row = db.get_image_by_path(path)
+            if not row:
+                image_id = db.add_image(path, os.path.basename(path))
+                row = db.get_image(image_id)
+            if row:
+                rows.append(row)
         self._gallery_model.set_images(rows)
 
     def load_images(self, rows):
