@@ -119,7 +119,7 @@ class MainWindow(QMainWindow):
         if folder:
             self._current_folder = folder
             self._gallery.load_folder(folder)
-            self._folder_tree.navigate_to(folder)
+            self._folder_tree.set_root(folder)
             self._status_label.setText(f"Folder: {folder}")
 
     def _scan_folder(self):

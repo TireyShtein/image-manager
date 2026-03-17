@@ -57,6 +57,12 @@ class FolderTree(QTreeView):
         if paths:
             self.files_selected.emit(paths)
 
+    def set_root(self, path: str):
+        """Restrict the tree to show only this folder as root."""
+        self._model.setRootPath(path)
+        self.setRootIndex(self._model.index(path))
+        self.setCurrentIndex(self._model.index(path))
+
     def navigate_to(self, path: str):
         index = self._model.index(path)
         self.setCurrentIndex(index)
