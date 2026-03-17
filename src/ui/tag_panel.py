@@ -19,6 +19,12 @@ class TagPanel(QWidget):
 
         layout.addWidget(QLabel("<b>Tags</b> — click to filter"))
 
+        self._search_input = QLineEdit()
+        self._search_input.setPlaceholderText("Search tags…")
+        self._search_input.setClearButtonEnabled(True)
+        self._search_input.textChanged.connect(self.refresh)
+        layout.addWidget(self._search_input)
+
         self._selection_label = QLabel("")
         self._selection_label.setStyleSheet("color: gray; font-size: 11px;")
         layout.addWidget(self._selection_label)
@@ -54,13 +60,19 @@ class TagPanel(QWidget):
 
     def set_selected_images(self, image_ids: list[int]):
         self._selected_image_ids = image_ids
+        if image_ids:
+            self._search_input.blockSignals(True)
+            self._search_input.clear()
+            self._search_input.blockSignals(False)
         self.refresh()
 
     def refresh(self):
         self._list.clear()
         if not self._selected_image_ids:
             self._selection_label.setText("")
-            for row in db.get_all_tags_with_counts():
+            query = self._search_input.text().strip()
+            rows = db.search_tags_with_counts(query) if query else db.get_all_tags_with_counts()
+            for row in rows:
                 item = QListWidgetItem(f"{row['name']} ({row['count']})")
                 item.setData(Qt.ItemDataRole.UserRole, row["name"])
                 item.setToolTip("Click to filter gallery by this tag")
