@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
                               QListWidgetItem, QPushButton, QLineEdit, QLabel,
-                              QInputDialog, QMessageBox)
+                              QInputDialog, QMessageBox, QCompleter)
 from PyQt6.QtCore import pyqtSignal, Qt
 from src.core import database as db
 
@@ -24,6 +24,14 @@ class TagPanel(QWidget):
         self._search_input.setClearButtonEnabled(True)
         self._search_input.textChanged.connect(self.refresh)
         layout.addWidget(self._search_input)
+        try:
+            from src.ai.wd14_tagger import get_all_tags
+            _completer = QCompleter(get_all_tags(), self)
+            _completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+            _completer.setFilterMode(Qt.MatchFlag.MatchContains)
+            self._search_input.setCompleter(_completer)
+        except Exception:
+            pass
 
         self._selection_label = QLabel("")
         self._selection_label.setStyleSheet("color: gray; font-size: 11px;")

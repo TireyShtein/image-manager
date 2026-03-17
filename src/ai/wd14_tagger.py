@@ -38,3 +38,12 @@ def classify(image_path: str) -> list[tuple[str, float]]:
 
     tags.sort(key=lambda x: x[1], reverse=True)
     return tags
+
+
+def get_all_tags() -> list[str]:
+    import csv
+    import importlib.resources
+    ref = importlib.resources.files("wdtagger.assets").joinpath("selected_tags.csv")
+    with importlib.resources.as_file(ref) as path:
+        with open(path, newline="", encoding="utf-8") as f:
+            return sorted(row["name"] for row in csv.DictReader(f))
