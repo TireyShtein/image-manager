@@ -12,6 +12,7 @@ from src.ui.tag_panel import TagPanel
 from src.ui.album_panel import AlbumPanel
 from src.core import database as db, image_scanner, file_ops
 from src.ai.classifier_worker import ClassifierWorker
+from src.ai.wd14_worker import WD14Worker
 
 
 class MainWindow(QMainWindow):
@@ -21,6 +22,7 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)
         self._current_folder: str | None = None
         self._classifier_worker: ClassifierWorker | None = None
+        self._wd14_worker: WD14Worker | None = None
         self._settings = QSettings("ImageManager", "ImageManager")
         self._status_prefix = "Ready"
         db.init_db()
@@ -114,6 +116,16 @@ class MainWindow(QMainWindow):
         act_cancel = QAction("Cancel Classification", self)
         act_cancel.triggered.connect(self._cancel_classification)
         ai_menu.addAction(act_cancel)
+
+        ai_menu.addSeparator()
+        act_wd14 = QAction("Tag with WD14…", self)
+        act_wd14.setShortcut("Ctrl+T")
+        act_wd14.triggered.connect(self._run_wd14_tagging)
+        ai_menu.addAction(act_wd14)
+
+        act_cancel_wd14 = QAction("Cancel WD14 Tagging", self)
+        act_cancel_wd14.triggered.connect(self._cancel_wd14_tagging)
+        ai_menu.addAction(act_cancel_wd14)
 
     def _build_statusbar(self):
         self._statusbar = QStatusBar()
@@ -391,4 +403,46 @@ class MainWindow(QMainWindow):
         self._progress.setVisible(False)
         self._status_label.setText("Classification complete.")
         self._album_panel.refresh()
+        self._tag_panel.refresh()
+
+    # ------------------------------------------------------------------ WD14
+
+    def _run_wd14_tagging(self):
+        image_ids = self._gallery.get_selected_ids()
+        if not image_ids:
+            QMessageBox.information(self, "No Selection", "Select images to tag first.")
+            return
+
+        if self._wd14_worker and self._wd14_worker.isRunning():
+            QMessageBox.information(self, "Busy", "WD14 tagging already running.")
+            return
+
+        self._progress.setVisible(True)
+        self._progress.setRange(0, len(image_ids))
+        self._progress.setValue(0)
+        self._status_label.setText(f"Tagging {len(image_ids)} image(s) with WD14…")
+
+        self._wd14_worker = WD14Worker(image_ids)
+        self._wd14_worker.progress.connect(self._on_wd14_progress)
+        self._wd14_worker.image_done.connect(self._on_wd14_done)
+        self._wd14_worker.error.connect(self._on_wd14_error)
+        self._wd14_worker.finished_all.connect(self._on_wd14_finished)
+        self._wd14_worker.start()
+
+    def _cancel_wd14_tagging(self):
+        if self._wd14_worker:
+            self._wd14_worker.cancel()
+
+    def _on_wd14_progress(self, current: int, total: int):
+        self._progress.setValue(current)
+
+    def _on_wd14_done(self, image_id: int, tags: list):
+        self._tag_panel.refresh()
+
+    def _on_wd14_error(self, image_id: int, msg: str):
+        self._status_label.setText(f"WD14 error on image {image_id}: {msg}")
+
+    def _on_wd14_finished(self):
+        self._progress.setVisible(False)
+        self._status_label.setText("WD14 tagging complete.")
         self._tag_panel.refresh()
