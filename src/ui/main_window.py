@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
                               QSplitter, QStatusBar, QProgressBar, QLabel,
                               QFileDialog, QMessageBox, QInputDialog, QMenu,
                               QToolBar)
-from PyQt6.QtCore import Qt, QThread
+from PyQt6.QtCore import Qt, QThread, QSettings
 from PyQt6.QtGui import QAction
 from src.ui.folder_tree import FolderTree
 from src.ui.gallery_view import GalleryView
@@ -21,10 +21,12 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)
         self._current_folder: str | None = None
         self._classifier_worker: ClassifierWorker | None = None
+        self._settings = QSettings("ImageManager", "ImageManager")
         db.init_db()
         self._build_ui()
         self._build_menu()
         self._build_statusbar()
+        self._restore_last_folder()
 
     # ------------------------------------------------------------------ UI build
 
@@ -114,6 +116,14 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ Slots
 
+    def _restore_last_folder(self):
+        folder = self._settings.value("last_folder", "")
+        if folder and os.path.isdir(folder):
+            self._current_folder = folder
+            self._folder_tree.set_root(folder)
+            self._gallery.load_folder(folder)
+            self._status_label.setText(f"Folder: {folder}")
+
     def _open_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Open Folder")
         if folder:
@@ -121,6 +131,7 @@ class MainWindow(QMainWindow):
             self._gallery.load_folder(folder)
             self._folder_tree.set_root(folder)
             self._status_label.setText(f"Folder: {folder}")
+            self._settings.setValue("last_folder", folder)
 
     def _scan_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Scan Folder into Library")
