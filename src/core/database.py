@@ -7,6 +7,10 @@ from typing import Optional
 DB_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'imagemanager.db')
 
 
+def db_exists() -> bool:
+    return os.path.isfile(os.path.abspath(DB_PATH))
+
+
 def get_connection() -> sqlite3.Connection:
     os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
     conn = sqlite3.connect(os.path.abspath(DB_PATH))
@@ -124,6 +128,19 @@ def get_all_image_paths() -> list:
         return [(r["id"], r["path"]) for r in rows]
 
 
+def cleanup_stale_images() -> int:
+    rows = get_all_image_paths()
+    stale_ids = [img_id for img_id, path in rows if not os.path.isfile(path)]
+    if stale_ids:
+        with get_connection() as conn:
+            conn.executemany("DELETE FROM images WHERE id = ?", [(i,) for i in stale_ids])
+    with get_connection() as conn:
+        conn.execute(
+            "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM image_tags)"
+        )
+    return len(stale_ids)
+
+
 # --- Tags ---
 
 def get_or_create_tag(name: str) -> int:
@@ -142,7 +159,7 @@ def get_all_tags_with_counts() -> list:
     with get_connection() as conn:
         return conn.execute(
             "SELECT t.name, COUNT(it.image_id) as count "
-            "FROM tags t LEFT JOIN image_tags it ON t.id = it.tag_id "
+            "FROM tags t JOIN image_tags it ON t.id = it.tag_id "
             "GROUP BY t.id ORDER BY t.name"
         ).fetchall()
 

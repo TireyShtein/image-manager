@@ -25,7 +25,12 @@ class MainWindow(QMainWindow):
         self._wd14_worker: WD14Worker | None = None
         self._settings = QSettings("ImageManager", "ImageManager")
         self._status_prefix = "Ready"
+        _db_is_new = not db.db_exists()
         db.init_db()
+        if _db_is_new:
+            print("[DB] Created new database at:", db.DB_PATH)
+        else:
+            print("[DB] Opened existing database at:", db.DB_PATH)
         self._build_ui()
         self._build_menu()
         self._build_statusbar()
@@ -100,6 +105,10 @@ class MainWindow(QMainWindow):
         act_scan = QAction("Scan Folder into Library", self)
         act_scan.triggered.connect(self._scan_folder)
         file_menu.addAction(act_scan)
+
+        act_cleanup = QAction("Clean Up Missing Files from Library", self)
+        act_cleanup.triggered.connect(self._cleanup_library)
+        file_menu.addAction(act_cleanup)
         file_menu.addSeparator()
 
         act_quit = QAction("Quit", self)
@@ -185,6 +194,15 @@ class MainWindow(QMainWindow):
             self._btn_go_up.setEnabled(bool(parent) and parent != self._current_folder)
         else:
             self._btn_go_up.setEnabled(False)
+
+    def _cleanup_library(self):
+        removed = db.cleanup_stale_images()
+        self._tag_panel.refresh()
+        QMessageBox.information(
+            self, "Clean Up Library",
+            f"Removed {removed} missing file(s) from the library."
+            if removed else "No missing files found — library is clean."
+        )
 
     def _scan_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Scan Folder into Library")

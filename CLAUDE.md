@@ -38,11 +38,14 @@ AI Layer (src/ai/)
   ClassifierWorker    — QThread orchestrator; emits progress/image_done/error signals
   nsfw_detector.py    — Stage 1: falconsai/nsfw_image_detection → moves to SFW/ or NSFW/
   content_classifier.py — Stage 2: google/vit-base-patch16-224 → auto-tags top-3 ImageNet labels
+  WD14Worker          — QThread for standalone WD14 tagging; emits progress/image_done/error signals
+  wd14_tagger.py      — SmilingWolf/wd-swinv2-tagger-v3 via wdtagger; tags general/character/rating
 ```
 
 ### Threading model
 - Thumbnail generation: `QThreadPool` (global) + `ThumbnailLoader(QRunnable)` per image
 - AI classification: `ClassifierWorker(QThread)` — one worker at a time, cancellable
+- WD14 tagging: `WD14Worker(QThread)` — one worker at a time, cancellable
 - All cross-thread communication uses `pyqtSignal`
 
 ### Database
@@ -64,4 +67,7 @@ SQLite with WAL journal mode and foreign keys enabled. Tables: `images`, `tags`,
 Image extensions live in `src/core/image_scanner.py:SUPPORTED_EXTENSIONS`. Video extensions live in `src/core/thumbnail_cache.py:VIDEO_EXTENSIONS`. Both sets are combined in `folder_tree.py` and `gallery_view.py`.
 
 ### AI models
-Models are downloaded from HuggingFace on first use (~150 MB Falconsai, ~300 MB ViT) and cached in `~/.cache/huggingface/`. The AI pipeline is manual-trigger only (AI menu → Classify Selected Images).
+Models are downloaded from HuggingFace on first use and cached in `~/.cache/huggingface/`. All AI actions are manual-trigger only via the AI menu.
+
+- **Classify Selected Images (Ctrl+R):** Stage 1 NSFW detection (~150 MB Falconsai) sorts images into SFW/NSFW folders; Stage 2 content tagging (~300 MB ViT) adds top-3 ImageNet labels as tags.
+- **Tag with WD14… (Ctrl+T):** Tags images in-place using `SmilingWolf/wd-swinv2-tagger-v3` via the `wdtagger` package (~400 MB). Outputs general content tags, character tags, and a `rating:` tag (general/sensitive/questionable/explicit). Thresholds: general=0.35, character=0.9.
