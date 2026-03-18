@@ -191,6 +191,7 @@ class GalleryView(QListView):
         self._apply_size(_compute_thumb_size(count))
 
     def _load_rows(self, rows):
+        self.clearSelection()
         self._gallery_model.set_images(rows)
         self._refresh_size()
 

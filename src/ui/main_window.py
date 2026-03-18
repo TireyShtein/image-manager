@@ -35,6 +35,7 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._build_statusbar()
         self._restore_last_folder()
+        self._tag_panel.refresh()
 
     # ------------------------------------------------------------------ UI build
 

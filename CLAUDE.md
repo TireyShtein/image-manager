@@ -63,6 +63,13 @@ SQLite with WAL journal mode and foreign keys enabled. Tables: `images`, `tags`,
 ### Persistent last folder
 `MainWindow` uses `QSettings("ImageManager", "ImageManager")` (Windows registry) to save and restore `last_folder`. On launch, `_restore_last_folder()` reloads the tree and gallery if the stored path still exists on disk.
 
+### Tag panel
+`TagPanel` has two separate `QListWidget`s:
+- **All Tags** — shows every tag in the DB with image counts via `db.get_all_tags_with_counts()`. Filtered live by the search bar via `db.search_tags_with_counts(query)`. Clicking a tag emits `tag_filter_changed` to filter the gallery.
+- **Selected Image Tags** — shows tags for the first selected image. Filtered by the same search bar (client-side). Supports add/remove for all selected images.
+
+The search bar has `QCompleter` autocomplete sourced from `wd14_tagger.get_all_tags()`, which reads `wdtagger/assets/selected_tags.csv` at runtime (no model load needed). Stale `image_tags` rows (images deleted/moved outside the app) are surfaced by the count query joining only valid `image_tags` rows.
+
 ### Media type definitions
 Image extensions live in `src/core/image_scanner.py:SUPPORTED_EXTENSIONS`. Video extensions live in `src/core/thumbnail_cache.py:VIDEO_EXTENSIONS`. Both sets are combined in `folder_tree.py` and `gallery_view.py`.
 
