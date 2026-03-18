@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QMainWindow, QPushButton, QWidget, QHBoxLayout, QVB
                               QSplitter, QStatusBar, QProgressBar, QLabel,
                               QFileDialog, QMessageBox, QInputDialog, QMenu,
                               QApplication)
-from PyQt6.QtCore import Qt, QThread, QSettings
+from PyQt6.QtCore import Qt, QThread, QSettings, QTimer
 from PyQt6.QtGui import QAction
 from src.ui.folder_tree import FolderTree
 from src.ui.gallery_view import GalleryView
@@ -34,6 +34,13 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_menu()
         self._build_statusbar()
+
+        # Debounced tag-panel refresh for AI signal handlers
+        self._tag_refresh_timer = QTimer(self)
+        self._tag_refresh_timer.setSingleShot(True)
+        self._tag_refresh_timer.setInterval(500)
+        self._tag_refresh_timer.timeout.connect(self._tag_panel.refresh)
+
         self._restore_last_folder()
         self._tag_panel.refresh()
 
@@ -430,7 +437,7 @@ class MainWindow(QMainWindow):
     def _on_classify_result(self, image_id: int, stage: str, label: str, confidence: float):
         if stage == "nsfw":
             self._gallery.remove_image(image_id)
-        self._tag_panel.refresh()
+        self._tag_refresh_timer.start()
 
     def _on_classify_error(self, image_id: int, msg: str):
         self._status_label.setText(f"Error on image {image_id}: {msg}")
@@ -439,7 +446,7 @@ class MainWindow(QMainWindow):
         self._progress.setVisible(False)
         self._status_label.setText("Classification complete.")
         self._album_panel.refresh()
-        self._tag_panel.refresh()
+        self._tag_refresh_timer.start()
 
     # ------------------------------------------------------------------ WD14
 
@@ -473,7 +480,7 @@ class MainWindow(QMainWindow):
         self._progress.setValue(current)
 
     def _on_wd14_done(self, image_id: int, tags: list):
-        self._tag_panel.refresh()
+        self._tag_refresh_timer.start()
 
     def _on_wd14_error(self, image_id: int, msg: str):
         self._status_label.setText(f"WD14 error on image {image_id}: {msg}")
@@ -481,4 +488,4 @@ class MainWindow(QMainWindow):
     def _on_wd14_finished(self):
         self._progress.setVisible(False)
         self._status_label.setText("WD14 tagging complete.")
-        self._tag_panel.refresh()
+        self._tag_refresh_timer.start()

@@ -100,6 +100,19 @@ def get_image_by_path(path: str) -> Optional[sqlite3.Row]:
         return conn.execute("SELECT * FROM images WHERE path = ?", (path,)).fetchone()
 
 
+def get_images_batch(image_ids: list[int]) -> dict:
+    """Fetch multiple images by ID in one query. Returns {id: Row}."""
+    if not image_ids:
+        return {}
+    placeholders = ",".join("?" * len(image_ids))
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM images WHERE id IN ({placeholders})",
+            image_ids,
+        ).fetchall()
+        return {row["id"]: row for row in rows}
+
+
 def get_images_in_folder(folder: str) -> list:
     folder = folder.rstrip('/\\') + os.sep
     with get_connection() as conn:
@@ -126,6 +139,28 @@ def get_all_image_paths() -> list:
     with get_connection() as conn:
         rows = conn.execute("SELECT id, path FROM images ORDER BY filename").fetchall()
         return [(r["id"], r["path"]) for r in rows]
+
+
+def get_or_create_images_batch(paths: list[str]) -> list:
+    """Register many images in one transaction and return all rows.
+
+    Uses INSERT OR IGNORE so existing rows are left untouched, then
+    fetches every row whose path is in *paths* with a single SELECT.
+    """
+    if not paths:
+        return []
+    now = datetime.now().isoformat()
+    with get_connection() as conn:
+        conn.executemany(
+            "INSERT OR IGNORE INTO images (path, filename, width, height, file_size, date_added, date_modified) "
+            "VALUES (?, ?, NULL, NULL, NULL, ?, ?)",
+            [(p, os.path.basename(p), now, now) for p in paths],
+        )
+        placeholders = ",".join("?" * len(paths))
+        return conn.execute(
+            f"SELECT * FROM images WHERE path IN ({placeholders}) ORDER BY filename",
+            paths,
+        ).fetchall()
 
 
 def cleanup_stale_images() -> int:
@@ -181,6 +216,26 @@ def add_tag_to_image(image_id: int, tag_name: str):
         conn.execute(
             "INSERT OR IGNORE INTO image_tags (image_id, tag_id) VALUES (?, ?)",
             (image_id, tag_id)
+        )
+
+
+def add_tags_to_image_batch(image_id: int, tag_names: list[str]):
+    """Add multiple tags to an image in a single transaction."""
+    if not tag_names:
+        return
+    with get_connection() as conn:
+        conn.executemany(
+            "INSERT OR IGNORE INTO tags (name) VALUES (?)",
+            [(name,) for name in tag_names],
+        )
+        placeholders = ",".join("?" * len(tag_names))
+        tag_rows = conn.execute(
+            f"SELECT id, name FROM tags WHERE name IN ({placeholders})",
+            tag_names,
+        ).fetchall()
+        conn.executemany(
+            "INSERT OR IGNORE INTO image_tags (image_id, tag_id) VALUES (?, ?)",
+            [(image_id, row["id"]) for row in tag_rows],
         )
 
 

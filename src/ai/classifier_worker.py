@@ -24,11 +24,12 @@ class ClassifierWorker(QThread):
 
     def run(self):
         total = len(self.image_ids)
+        image_map = db.get_images_batch(self.image_ids)
         for i, image_id in enumerate(self.image_ids):
             if self._cancelled:
                 break
             self.progress.emit(i, total)
-            row = db.get_image(image_id)
+            row = image_map.get(image_id)
             if not row:
                 continue
             path = row["path"]
@@ -43,8 +44,8 @@ class ClassifierWorker(QThread):
                 # Stage 2: Content classification (on updated path)
                 if self.run_stage2:
                     results = content_classifier.classify(new_path)
+                    db.add_tags_to_image_batch(image_id, [tag_label for tag_label, _ in results])
                     for tag_label, tag_conf in results:
-                        db.add_tag_to_image(image_id, tag_label)
                         db.save_ai_result(image_id, "content", tag_label, tag_conf)
                         self.image_done.emit(image_id, "content", tag_label, tag_conf)
 

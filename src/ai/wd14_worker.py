@@ -19,17 +19,17 @@ class WD14Worker(QThread):
 
     def run(self):
         total = len(self.image_ids)
+        image_map = db.get_images_batch(self.image_ids)
         for i, image_id in enumerate(self.image_ids):
             if self._cancelled:
                 break
             self.progress.emit(i, total)
-            row = db.get_image(image_id)
+            row = image_map.get(image_id)
             if not row:
                 continue
             try:
                 tags = wd14_tagger.classify(row["path"])
-                for tag, conf in tags:
-                    db.add_tag_to_image(image_id, tag)
+                db.add_tags_to_image_batch(image_id, [tag for tag, conf in tags])
                 if tags:
                     db.save_ai_result(image_id, "wd14", tags[0][0], tags[0][1])
                 self.image_done.emit(image_id, tags)

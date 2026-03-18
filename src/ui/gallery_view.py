@@ -1,12 +1,17 @@
 import os
 from PyQt6.QtWidgets import QListView, QAbstractItemView, QStyle
 from PyQt6.QtCore import (Qt, QAbstractListModel, QModelIndex, QSize, QRect,
-                           QRunnable, QThreadPool, pyqtSignal, QObject, pyqtSlot)
+                           QRunnable, QThreadPool, pyqtSignal, QObject, pyqtSlot,
+                           QTimer, QPoint)
 from PyQt6.QtGui import QPixmap, QPainter, QFont, QColor
 from src.core import thumbnail_cache, database as db
 
 # Maximum size stored in the thumbnail cache on disk
 CACHE_THUMB_SIZE = 256
+
+# Prefetch / eviction margins (in rows)
+_PREFETCH_MARGIN = 40
+_EVICT_MARGIN = 80
 
 # Size tiers: (max_count, thumb_px)
 _SIZE_TIERS = [
@@ -26,6 +31,18 @@ def _compute_thumb_size(count: int) -> int:
         if count <= max_count:
             return size
     return _MIN_THUMB_SIZE
+
+
+# Reusable grey placeholder, created lazily
+_placeholder_cache: dict[int, QPixmap] = {}
+
+
+def _get_placeholder(size: int) -> QPixmap:
+    if size not in _placeholder_cache:
+        pix = QPixmap(size, size)
+        pix.fill(QColor(220, 220, 220))
+        _placeholder_cache[size] = pix
+    return _placeholder_cache[size]
 
 
 class ThumbnailSignals(QObject):
@@ -61,6 +78,8 @@ class GalleryModel(QAbstractListModel):
         self._signals.loaded.connect(self._on_thumbnail_loaded)
         self._total: int = 0
         self._loaded: int = 0
+        # Track which rows have been queued for thumbnail loading
+        self._queued: set[int] = set()
 
     def set_images(self, rows):
         self.beginResetModel()
@@ -69,11 +88,12 @@ class GalleryModel(QAbstractListModel):
         self._id_index = {item["id"]: i for i, item in enumerate(self._items)}
         self._total = len(self._items)
         self._loaded = 0
+        self._queued = set()
         self.endResetModel()
         if self._total == 0:
             self._signals.all_loaded.emit()
-        else:
-            self._start_loading()
+        # Do NOT call _start_loading() — thumbnails are loaded lazily via
+        # request_thumbnails() driven by the viewport scroll position.
 
     def get_all_items(self) -> list[tuple[int, str]]:
         return [(item["id"], item["path"]) for item in self._items]
@@ -100,14 +120,46 @@ class GalleryModel(QAbstractListModel):
             Qt.TransformationMode.SmoothTransformation
         )
 
-    def _start_loading(self):
-        for item in self._items:
+    def request_thumbnails(self, first_row: int, last_row: int):
+        """Queue thumbnail loading for rows in the visible range + margin.
+
+        Only queues items that have no source_pix and are not already queued.
+        """
+        start = max(0, first_row - _PREFETCH_MARGIN)
+        end = min(len(self._items), last_row + _PREFETCH_MARGIN + 1)
+        for i in range(start, end):
+            if i in self._queued:
+                continue
+            item = self._items[i]
+            if item["source_pix"] is not None:
+                continue
+            self._queued.add(i)
             loader = ThumbnailLoader(item["id"], item["path"], self._signals)
             self._pool.start(loader)
+
+    def _evict_offscreen(self, first_visible: int, last_visible: int):
+        """Free pixmap memory for rows far outside the visible range."""
+        keep_start = max(0, first_visible - _EVICT_MARGIN)
+        keep_end = min(len(self._items), last_visible + _EVICT_MARGIN + 1)
+        for i in range(0, keep_start):
+            item = self._items[i]
+            if item["source_pix"] is not None:
+                item["source_pix"] = None
+                item["display_pix"] = None
+                self._queued.discard(i)
+        for i in range(keep_end, len(self._items)):
+            item = self._items[i]
+            if item["source_pix"] is not None:
+                item["source_pix"] = None
+                item["display_pix"] = None
+                self._queued.discard(i)
 
     def _on_thumbnail_loaded(self, image_id: int, thumb_path: str):
         idx = self._id_index.get(image_id)
         if idx is None:
+            return
+        # If the item was evicted before the loader finished, discard the result
+        if idx not in self._queued:
             return
         source = QPixmap(thumb_path)
         self._items[idx]["source_pix"] = source
@@ -127,7 +179,9 @@ class GalleryModel(QAbstractListModel):
             return None
         item = self._items[index.row()]
         if role == Qt.ItemDataRole.DecorationRole:
-            return item["display_pix"] or QPixmap(self._display_size, self._display_size)
+            if item["display_pix"] is not None:
+                return item["display_pix"]
+            return _get_placeholder(self._display_size)
         if role == Qt.ItemDataRole.DisplayRole:
             if self._display_size < 140:
                 return None
@@ -149,7 +203,16 @@ class GalleryModel(QAbstractListModel):
             return
         self.beginRemoveRows(QModelIndex(), idx, idx)
         self._items.pop(idx)
+        self._queued.discard(idx)
+        # Rebuild index and queued set (row numbers shifted)
         self._id_index = {item["id"]: i for i, item in enumerate(self._items)}
+        new_queued = set()
+        for q in self._queued:
+            if q > idx:
+                new_queued.add(q - 1)
+            else:
+                new_queued.add(q)
+        self._queued = new_queued
         self.endRemoveRows()
 
     def count(self) -> int:
@@ -199,6 +262,27 @@ class GalleryView(QListView):
         self._gallery_model._signals.all_loaded.connect(self._on_all_loaded)
         self.selectionModel().selectionChanged.connect(self._on_selection_changed)
 
+        # Viewport-driven lazy loading: connect scroll to _on_scroll
+        self.verticalScrollBar().valueChanged.connect(self._on_scroll)
+
+    def _on_scroll(self, *_args):
+        """Compute visible row range and request/evict thumbnails accordingly."""
+        vp = self.viewport()
+        top_index = self.indexAt(vp.rect().topLeft())
+        bottom_index = self.indexAt(vp.rect().bottomRight())
+
+        first = top_index.row() if top_index.isValid() else 0
+        last = bottom_index.row() if bottom_index.isValid() else self._gallery_model.count() - 1
+        if last < 0:
+            return
+
+        self._gallery_model.request_thumbnails(first, last)
+        self._gallery_model._evict_offscreen(first, last)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._on_scroll()
+
     def _on_all_loaded(self):
         self._loading = False
         self.viewport().update()
@@ -208,7 +292,7 @@ class GalleryView(QListView):
         self.selection_changed.emit(self.get_selected_ids())
 
     def _apply_size(self, thumb_px: int):
-        label_px = max(20, thumb_px // 5)  # scales: 70px→20, 140px→28, 300px→60
+        label_px = max(20, thumb_px // 5)  # scales: 70px->20, 140px->28, 300px->60
         self.setIconSize(QSize(thumb_px, thumb_px))
         self.setGridSize(QSize(thumb_px + 16, thumb_px + label_px))
         self._gallery_model.set_display_size(thumb_px)
@@ -219,9 +303,16 @@ class GalleryView(QListView):
 
     def _load_rows(self, rows):
         self.clearSelection()
-        self._loading = len(rows) > 0
+        # For non-empty folders, clear _loading immediately so the empty-state
+        # overlay doesn't flash.  With lazy loading there is no single
+        # "all thumbnails done" moment to wait for before clearing.
+        self._loading = False
         self._apply_size(_compute_thumb_size(len(rows)))
         self._gallery_model.set_images(rows)
+        # Kick off initial visible-range loading after the model is populated
+        # and Qt has had a chance to lay out items.
+        if len(rows) > 0:
+            QTimer.singleShot(0, self._on_scroll)
 
     def load_folder(self, folder: str):
         self._empty_text = "No media in this folder"
@@ -236,14 +327,8 @@ class GalleryView(QListView):
                     paths.append(full)
         except PermissionError:
             pass
-        rows = []
-        for path in sorted(paths, key=lambda p: os.path.basename(p).lower()):
-            row = db.get_image_by_path(path)
-            if not row:
-                image_id = db.add_image(path, os.path.basename(path))
-                row = db.get_image(image_id)
-            if row:
-                rows.append(row)
+        sorted_paths = sorted(paths, key=lambda p: os.path.basename(p).lower())
+        rows = db.get_or_create_images_batch(sorted_paths)
         self._load_rows(rows)
 
     def load_images(self, rows, empty_text: str = "No images match this filter") -> int:
