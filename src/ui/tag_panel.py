@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
                               QListWidgetItem, QPushButton, QLineEdit, QLabel,
                               QFrame, QInputDialog, QMessageBox, QCompleter)
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import pyqtSignal, Qt, QStringListModel
 from PyQt6.QtGui import QFont, QColor
 from src.core import database as db
 
@@ -30,14 +30,11 @@ class TagPanel(QWidget):
         self._search_input.setClearButtonEnabled(True)
         self._search_input.textChanged.connect(self.refresh)
         layout.addWidget(self._search_input)
-        try:
-            from src.ai.wd14_tagger import get_all_tags
-            _completer = QCompleter(get_all_tags(), self)
-            _completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-            _completer.setFilterMode(Qt.MatchFlag.MatchContains)
-            self._search_input.setCompleter(_completer)
-        except Exception:
-            pass
+        self._completer_model = QStringListModel(self)
+        _completer = QCompleter(self._completer_model, self)
+        _completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        _completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self._search_input.setCompleter(_completer)
 
         # --- Global tags list ---
         layout.addSpacing(4)
@@ -135,7 +132,9 @@ class TagPanel(QWidget):
 
         # Global tags list
         self._global_list.clear()
-        rows = db.search_tags_with_counts(query) if query else db.get_all_tags_with_counts()
+        all_rows = db.get_all_tags_with_counts()
+        self._completer_model.setStringList([r["name"] for r in all_rows])
+        rows = db.search_tags_with_counts(query) if query else all_rows
         for row in rows:
             item = QListWidgetItem(f"{row['name']} ({row['count']})")
             item.setData(Qt.ItemDataRole.UserRole, row["name"])
