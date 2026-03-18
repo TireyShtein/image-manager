@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
                               QListWidgetItem, QPushButton, QLineEdit, QLabel,
                               QFrame, QInputDialog, QMessageBox, QCompleter)
 from PyQt6.QtCore import pyqtSignal, Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QColor
 from src.core import database as db
 
 LIST_STYLE = (
@@ -57,7 +57,7 @@ class TagPanel(QWidget):
         self._btn_clear = QPushButton("Clear filter")
         self._btn_clear.setObjectName("btn_clear")
         self._btn_clear.setStyleSheet(
-            "QPushButton#btn_clear { color: #fff; border: 1px solid #ccc;"
+            "QPushButton#btn_clear { color: #fff; border: 1px solid rgba(255,255,255,0.30);"
             " background: transparent; border-radius: 3px; padding: 2px 6px; }"
             "QPushButton#btn_clear:hover { background: rgba(255,255,255,0.09); }"
             "QPushButton#btn_clear:disabled { color: rgba(255,255,255,0.30);"
@@ -70,7 +70,7 @@ class TagPanel(QWidget):
         # --- Separator ---
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setStyleSheet("color: #cccccc;")
+        separator.setStyleSheet("color: rgba(255,255,255,0.15);")
         layout.addSpacing(4)
         layout.addWidget(separator)
         layout.addSpacing(4)
@@ -107,6 +107,10 @@ class TagPanel(QWidget):
         layout.addLayout(row)
 
         self._btn_remove = QPushButton("Remove tag from selected")
+        self._btn_remove.setStyleSheet(
+            "QPushButton:disabled { color: rgba(255,255,255,0.30);"
+            " border-color: rgba(255,255,255,0.15); }"
+        )
         self._btn_remove.setEnabled(False)
         self._btn_remove.clicked.connect(self._remove_tag)
         layout.addWidget(self._btn_remove)
@@ -123,7 +127,9 @@ class TagPanel(QWidget):
     def _clear_filter(self):
         self._global_list.clearSelection()
         self._selected_list.clearSelection()
+        self._search_input.blockSignals(True)
         self._search_input.clear()
+        self._search_input.blockSignals(False)
         self._btn_clear.setEnabled(False)
         self.tag_filter_changed.emit("")
 
@@ -165,6 +171,8 @@ class TagPanel(QWidget):
                 label = name if count == n else f"{name} ({count}/{n})"
                 item = QListWidgetItem(label)
                 item.setData(Qt.ItemDataRole.UserRole, name)
+                if count < n:
+                    item.setForeground(QColor(255, 255, 255, 140))  # ~55% opacity
                 self._selected_list.addItem(item)
         else:
             self._selection_label.setText("Selected Image Tags")

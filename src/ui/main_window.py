@@ -239,6 +239,7 @@ class MainWindow(QMainWindow):
     def _on_tree_files_selected(self, paths: list[str]):
         self._gallery.load_paths(paths)
         self._status_label.setText(f"{len(paths)} file(s) selected in tree")
+        self._tag_panel.clear_search()
 
     def _on_thumbnails_loading(self, loaded: int, total: int):
         self._status_label.setText(f"{self._status_prefix} — Loading {loaded}/{total}…")
