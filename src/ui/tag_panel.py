@@ -121,6 +121,11 @@ class TagPanel(QWidget):
 
     def set_selected_images(self, image_ids: list[int]):
         self._selected_image_ids = image_ids
+        n = len(image_ids)
+        if n > 1:
+            self._btn_remove.setText(f"Remove tag from all {n} images")
+        else:
+            self._btn_remove.setText("Remove tag from selected")
         self._btn_remove.setEnabled(False)
         self.refresh()
 
