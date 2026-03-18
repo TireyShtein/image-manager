@@ -165,6 +165,7 @@ class GalleryView(QListView):
         super().__init__(parent)
         self._gallery_model = GalleryModel(self)
         self._empty_text = "No media in this folder"
+        self._loading = False
         self.setModel(self._gallery_model)
         self.setViewMode(QListView.ViewMode.IconMode)
         self.setResizeMode(QListView.ResizeMode.Adjust)
@@ -176,14 +177,21 @@ class GalleryView(QListView):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._on_context_menu)
         self._gallery_model._signals.progress.connect(self.thumbnails_loading)
-        self._gallery_model._signals.all_loaded.connect(
-            lambda: self.thumbnails_ready.emit(self._gallery_model.count())
-        )
+        self._gallery_model._signals.all_loaded.connect(self._on_all_loaded)
+        self.selectionModel().selectionChanged.connect(self._on_selection_changed)
+
+    def _on_all_loaded(self):
+        self._loading = False
+        self.viewport().update()
+        self.thumbnails_ready.emit(self._gallery_model.count())
+
+    def _on_selection_changed(self, selected, deselected):
+        self.selection_changed.emit(self.get_selected_ids())
 
     def _apply_size(self, thumb_px: int):
-        padding = 24  # room for filename label below thumb
+        label_px = max(20, thumb_px // 5)  # scales: 70px→20, 140px→28, 300px→60
         self.setIconSize(QSize(thumb_px, thumb_px))
-        self.setGridSize(QSize(thumb_px + 8, thumb_px + padding))
+        self.setGridSize(QSize(thumb_px + 16, thumb_px + label_px))
         self._gallery_model.set_display_size(thumb_px)
 
     def _refresh_size(self):
@@ -192,8 +200,9 @@ class GalleryView(QListView):
 
     def _load_rows(self, rows):
         self.clearSelection()
+        self._loading = len(rows) > 0
+        self._apply_size(_compute_thumb_size(len(rows)))
         self._gallery_model.set_images(rows)
-        self._refresh_size()
 
     def load_folder(self, folder: str):
         self._empty_text = "No media in this folder"
@@ -259,7 +268,7 @@ class GalleryView(QListView):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        if self._gallery_model.rowCount() == 0:
+        if self._gallery_model.rowCount() == 0 and not self._loading:
             from PyQt6.QtGui import QPainter
             painter = QPainter(self.viewport())
             painter.setPen(Qt.GlobalColor.gray)

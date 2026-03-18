@@ -57,6 +57,14 @@ SQLite with WAL journal mode and foreign keys enabled. Tables: `images`, `tags`,
 ### Thumbnail auto-sizing
 `GalleryView` dynamically resizes thumbnails based on image count via `_compute_thumb_size(count)` and `_SIZE_TIERS` (≤4→300px … 500+→70px). `GalleryModel` stores both `source_pix` (full 256px from cache) and `display_pix` (scaled to current display size) so re-scaling is in-memory only — no disk re-read.
 
+Grid cell height is `thumb_px + label_px` where `label_px = max(20, thumb_px // 5)` — this scales the filename label area with thumbnail size (20px at 70px thumbs → 60px at 300px thumbs) so filenames never overlap the thumbnail. Grid cell width is `thumb_px + 16` (8px per side) to give the selection highlight visible breathing room. Size tier is computed from `len(rows)` and applied to the model *before* `set_images()` fires `endResetModel()`, preventing a size-pop on folder change.
+
+### Gallery selection signal
+`GalleryView` emits `selection_changed(list[int])` — a list of selected image IDs — whenever the selection changes. This is wired internally via `selectionModel().selectionChanged` → `_on_selection_changed` → `selection_changed.emit(...)`. `MainWindow` connects to `self._gallery.selection_changed` rather than reaching into `selectionModel()` directly, keeping the coupling at the domain level (IDs, not Qt model internals).
+
+### Gallery empty state
+`GalleryView` tracks a `_loading` flag. It is set `True` before `set_images()` when rows exist, and cleared to `False` in `_on_all_loaded()` (connected to `GalleryModel._signals.all_loaded`). The `paintEvent` empty-state overlay ("No media in this folder") is suppressed while `_loading` is `True`, preventing a false flash before thumbnails arrive. A genuinely empty folder (`len(rows) == 0`) never sets `_loading`, so the overlay appears immediately.
+
 ### Folder tree scoping
 `FolderTree.set_root(path)` restricts the tree's visible root to a single folder (`setRootIndex`). Called by `MainWindow._open_folder()` and `_restore_last_folder()`. `navigate_to(path)` scrolls/selects without changing the root.
 

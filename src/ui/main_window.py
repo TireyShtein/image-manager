@@ -72,7 +72,7 @@ class MainWindow(QMainWindow):
         self._gallery = GalleryView()
         self._gallery.image_double_clicked.connect(self._on_image_double_clicked)
         self._gallery.context_menu_requested.connect(self._on_context_menu)
-        self._gallery.selectionModel().selectionChanged.connect(self._on_selection_changed)
+        self._gallery.selection_changed.connect(self._on_selection_changed)
         self._gallery.thumbnails_loading.connect(self._on_thumbnails_loading)
         self._gallery.thumbnails_ready.connect(self._on_thumbnails_ready)
         self._gallery.empty_context_menu_requested.connect(self._on_empty_gallery_context_menu)
@@ -258,8 +258,7 @@ class MainWindow(QMainWindow):
         idx = next((i for i, (iid, _) in enumerate(nav) if iid == image_id), 0)
         ImageViewer(image_id, row["path"], self, all_images=nav, current_index=idx).exec()
 
-    def _on_selection_changed(self, selected, deselected):
-        ids = self._gallery.get_selected_ids()
+    def _on_selection_changed(self, ids: list):
         self._tag_panel.set_selected_images(ids)
         self._album_panel.set_selected_images(ids)
         count = len(ids)
