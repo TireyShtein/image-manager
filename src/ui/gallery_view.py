@@ -1,8 +1,8 @@
 import os
-from PyQt6.QtWidgets import QListView, QAbstractItemView
-from PyQt6.QtCore import (Qt, QAbstractListModel, QModelIndex, QSize,
+from PyQt6.QtWidgets import QListView, QAbstractItemView, QStyle
+from PyQt6.QtCore import (Qt, QAbstractListModel, QModelIndex, QSize, QRect,
                            QRunnable, QThreadPool, pyqtSignal, QObject, pyqtSlot)
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QPixmap, QPainter, QFont, QColor
 from src.core import thumbnail_cache, database as db
 
 # Maximum size stored in the thumbnail cache on disk
@@ -16,6 +16,7 @@ _SIZE_TIERS = [
     (80,   140),
     (200,  110),
     (500,   85),
+    (700,   78),
 ]
 _MIN_THUMB_SIZE = 70
 
@@ -128,6 +129,8 @@ class GalleryModel(QAbstractListModel):
         if role == Qt.ItemDataRole.DecorationRole:
             return item["display_pix"] or QPixmap(self._display_size, self._display_size)
         if role == Qt.ItemDataRole.DisplayRole:
+            if self._display_size < 140:
+                return None
             return os.path.basename(item["path"])
         if role == Qt.ItemDataRole.ToolTipRole:
             return item["path"]
@@ -171,7 +174,23 @@ class GalleryView(QListView):
         self.setResizeMode(QListView.ResizeMode.Adjust)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setUniformItemSizes(True)
-        self.setSpacing(4)
+        self.setSpacing(8)
+        self.setStyleSheet("""
+            QListView::item:hover {
+                background: rgba(100, 150, 255, 0.12);
+                border-radius: 4px;
+            }
+            QListView::item:selected {
+                background: rgba(80, 130, 255, 0.25);
+                border: 2px solid #4a90e2;
+                border-radius: 4px;
+            }
+            QListView::item:selected:!active {
+                background: rgba(80, 130, 255, 0.12);
+                border: 2px solid #9ab8ef;
+                border-radius: 4px;
+            }
+        """)
         self._apply_size(_compute_thumb_size(0))
         self.doubleClicked.connect(self._on_double_click)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -269,14 +288,32 @@ class GalleryView(QListView):
     def paintEvent(self, event):
         super().paintEvent(event)
         if self._gallery_model.rowCount() == 0 and not self._loading:
-            from PyQt6.QtGui import QPainter
             painter = QPainter(self.viewport())
-            painter.setPen(Qt.GlobalColor.gray)
-            painter.drawText(
-                self.viewport().rect(),
-                Qt.AlignmentFlag.AlignCenter,
-                self._empty_text
-            )
+            rect = self.viewport().rect()
+            cx, cy = rect.center().x(), rect.center().y()
+
+            # Folder icon centered above text
+            icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+            icon_size = 48
+            icon.paint(painter, QRect(cx - icon_size // 2, cy - icon_size - 28, icon_size, icon_size))
+
+            # Primary text
+            font = painter.font()
+            font.setPointSize(13)
+            font.setWeight(QFont.Weight.Medium)
+            painter.setFont(font)
+            painter.setPen(QColor("#444444"))
+            painter.drawText(QRect(rect.x(), cy - 8, rect.width(), 28),
+                             Qt.AlignmentFlag.AlignHCenter, self._empty_text)
+
+            # Secondary hint
+            font.setPointSize(10)
+            font.setWeight(QFont.Weight.Normal)
+            painter.setFont(font)
+            painter.setPen(QColor("#888888"))
+            painter.drawText(QRect(rect.x(), cy + 24, rect.width(), 22),
+                             Qt.AlignmentFlag.AlignHCenter,
+                             "Open a folder via File \u203a Open Folder")
 
     def image_count(self) -> int:
         return self._gallery_model.count()
