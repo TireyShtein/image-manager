@@ -173,6 +173,7 @@ class MainWindow(QMainWindow):
             self._folder_tree.set_root(folder)
             self._status_label.setText(self._status_prefix)
             self._settings.setValue("last_folder", folder)
+            self._tag_panel.clear_search()
             self._update_go_up_button()
 
     def _go_up_folder(self):
@@ -187,6 +188,7 @@ class MainWindow(QMainWindow):
         self._gallery.load_folder(parent)
         self._status_label.setText(self._status_prefix)
         self._settings.setValue("last_folder", parent)
+        self._tag_panel.clear_search()
         self._update_go_up_button()
 
     def _update_go_up_button(self):
@@ -231,6 +233,7 @@ class MainWindow(QMainWindow):
         self._gallery.load_folder(folder)
         self._status_label.setText(self._status_prefix)
         self._settings.setValue("last_folder", folder)
+        self._tag_panel.clear_search()
         self._update_go_up_button()
 
     def _on_tree_files_selected(self, paths: list[str]):

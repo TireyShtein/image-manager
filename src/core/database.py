@@ -204,6 +204,21 @@ def get_tags_for_image(image_id: int) -> list:
         return [r["name"] for r in rows]
 
 
+def get_tags_for_images(image_ids: list) -> list:
+    """Returns (name, count) rows for all tags across the given images, sorted by name."""
+    if not image_ids:
+        return []
+    placeholders = ",".join("?" * len(image_ids))
+    with get_connection() as conn:
+        return conn.execute(
+            f"SELECT t.name, COUNT(it.image_id) as count "
+            f"FROM tags t JOIN image_tags it ON t.id = it.tag_id "
+            f"WHERE it.image_id IN ({placeholders}) "
+            f"GROUP BY t.id ORDER BY t.name",
+            image_ids
+        ).fetchall()
+
+
 def get_images_by_tag(tag_name: str) -> list:
     with get_connection() as conn:
         return conn.execute(

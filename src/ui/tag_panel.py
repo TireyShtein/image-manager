@@ -1,12 +1,14 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
                               QListWidgetItem, QPushButton, QLineEdit, QLabel,
-                              QInputDialog, QMessageBox, QCompleter)
+                              QFrame, QInputDialog, QMessageBox, QCompleter)
 from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtGui import QFont
 from src.core import database as db
 
 LIST_STYLE = (
-    "QListWidget::item:hover { background: #dde8ff; }"
-    "QListWidget::item:selected { background: #b8d0ff; }"
+    "QListWidget { outline: 0; }"
+    "QListWidget::item:hover { background: rgba(100, 150, 255, 0.10); }"
+    "QListWidget::item:selected { background: rgba(80, 130, 255, 0.22); color: palette(text); }"
 )
 
 
@@ -20,7 +22,8 @@ class TagPanel(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(6, 8, 6, 4)
+        layout.setSpacing(4)
 
         self._search_input = QLineEdit()
         self._search_input.setPlaceholderText("Search tags…")
@@ -37,44 +40,102 @@ class TagPanel(QWidget):
             pass
 
         # --- Global tags list ---
-        layout.addWidget(QLabel("<b>All Tags</b> — click to filter"))
+        layout.addSpacing(4)
+        all_tags_label = QLabel("All Tags")
+        font = all_tags_label.font()
+        font.setPointSize(font.pointSize() + 1)
+        font.setWeight(QFont.Weight.DemiBold)
+        all_tags_label.setFont(font)
+        all_tags_label.setStyleSheet("color: #ffffff;")
+        layout.addWidget(all_tags_label)
+
         self._global_list = QListWidget()
         self._global_list.setStyleSheet(LIST_STYLE)
         self._global_list.itemClicked.connect(self._on_tag_clicked)
         layout.addWidget(self._global_list)
 
-        btn_clear = QPushButton("Clear filter")
-        btn_clear.clicked.connect(lambda: self.tag_filter_changed.emit(""))
-        layout.addWidget(btn_clear)
+        self._btn_clear = QPushButton("Clear filter")
+        self._btn_clear.setObjectName("btn_clear")
+        self._btn_clear.setStyleSheet(
+            "QPushButton#btn_clear { color: #fff; border: 1px solid #ccc;"
+            " background: transparent; border-radius: 3px; padding: 2px 6px; }"
+            "QPushButton#btn_clear:hover { background: rgba(255,255,255,0.09); }"
+            "QPushButton#btn_clear:disabled { color: rgba(255,255,255,0.30);"
+            " border-color: rgba(255,255,255,0.15); }"
+        )
+        self._btn_clear.setEnabled(False)
+        self._btn_clear.clicked.connect(self._clear_filter)
+        layout.addWidget(self._btn_clear)
+
+        # --- Separator ---
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setStyleSheet("color: #cccccc;")
+        layout.addSpacing(4)
+        layout.addWidget(separator)
+        layout.addSpacing(4)
 
         # --- Selected image tags list ---
-        self._selection_label = QLabel("<b>Selected Image Tags</b>")
+        self._selection_label = QLabel("Selected Image Tags")
+        font2 = self._selection_label.font()
+        font2.setPointSize(font2.pointSize() + 1)
+        font2.setWeight(QFont.Weight.DemiBold)
+        self._selection_label.setFont(font2)
+        self._selection_label.setStyleSheet("color: #ffffff;")
         layout.addWidget(self._selection_label)
 
         self._selected_list = QListWidget()
         self._selected_list.setStyleSheet(LIST_STYLE)
-        self._selected_list.itemClicked.connect(self._on_tag_clicked)
+        self._selected_list.currentItemChanged.connect(self._on_selected_list_item_changed)
         layout.addWidget(self._selected_list)
 
         row = QHBoxLayout()
         self._tag_input = QLineEdit()
-        self._tag_input.setPlaceholderText("New tag...")
+        self._tag_input.setPlaceholderText("New tag…")
+        self._tag_input.setEnabled(False)
         self._tag_input.returnPressed.connect(self._add_tag)
         row.addWidget(self._tag_input)
 
-        btn_add = QPushButton("+")
-        btn_add.setFixedWidth(28)
-        btn_add.clicked.connect(self._add_tag)
-        row.addWidget(btn_add)
+        self._btn_add = QPushButton("+")
+        self._btn_add.setFixedWidth(28)
+        self._btn_add.setFixedHeight(self._tag_input.sizeHint().height())
+        self._btn_add.setToolTip("Add tag to selected images")
+        self._btn_add.setEnabled(False)
+        self._btn_add.clicked.connect(self._add_tag)
+        row.addWidget(self._btn_add)
 
         layout.addLayout(row)
 
-        btn_remove = QPushButton("Remove tag from selected")
-        btn_remove.clicked.connect(self._remove_tag)
-        layout.addWidget(btn_remove)
+        self._btn_remove = QPushButton("Remove tag from selected")
+        self._btn_remove.setEnabled(False)
+        self._btn_remove.clicked.connect(self._remove_tag)
+        layout.addWidget(self._btn_remove)
+
+    def clear_search(self):
+        """Called by MainWindow on folder navigation to reset search state."""
+        self._search_input.blockSignals(True)
+        self._search_input.clear()
+        self._search_input.blockSignals(False)
+        self._global_list.clearSelection()
+        self._btn_clear.setEnabled(False)
+        self.refresh()
+
+    def _clear_filter(self):
+        self._global_list.clearSelection()
+        self._selected_list.clearSelection()
+        self._search_input.clear()
+        self._btn_clear.setEnabled(False)
+        self.tag_filter_changed.emit("")
+
+    def _on_selected_list_item_changed(self, current, previous):
+        self._btn_remove.setEnabled(current is not None and bool(self._selected_image_ids))
 
     def set_selected_images(self, image_ids: list[int]):
         self._selected_image_ids = image_ids
+        has_selection = bool(image_ids)
+        self._tag_input.setEnabled(has_selection)
+        self._btn_add.setEnabled(has_selection)
+        self._btn_remove.setEnabled(False)
         self.refresh()
 
     def refresh(self):
@@ -94,36 +155,42 @@ class TagPanel(QWidget):
         self._selected_list.clear()
         if self._selected_image_ids:
             n = len(self._selected_image_ids)
-            label = f"<b>Selected Image Tags</b>" + (f" — image 1 of {n}" if n > 1 else "")
-            self._selection_label.setText(label)
-            tags = db.get_tags_for_image(self._selected_image_ids[0])
-            for name in tags:
+            suffix = f" — {n} images" if n > 1 else ""
+            self._selection_label.setText(f"Selected Image Tags{suffix}")
+            tag_rows = db.get_tags_for_images(self._selected_image_ids)
+            for row in tag_rows:
+                name, count = row["name"], row["count"]
                 if query_lower and query_lower not in name.lower():
                     continue
-                item = QListWidgetItem(name)
-                item.setToolTip("Click to filter gallery by this tag")
+                label = name if count == n else f"{name} ({count}/{n})"
+                item = QListWidgetItem(label)
+                item.setData(Qt.ItemDataRole.UserRole, name)
                 self._selected_list.addItem(item)
         else:
-            self._selection_label.setText("<b>Selected Image Tags</b>")
+            self._selection_label.setText("Selected Image Tags")
 
     def _add_tag(self):
-        name = self._tag_input.text().strip()
+        name = " ".join(self._tag_input.text().split())
         if not name or not self._selected_image_ids:
             return
         for image_id in self._selected_image_ids:
             db.add_tag_to_image(image_id, name)
         self._tag_input.clear()
+        self._search_input.blockSignals(True)
+        self._search_input.clear()
+        self._search_input.blockSignals(False)
         self.refresh()
 
     def _remove_tag(self):
         item = self._selected_list.currentItem()
         if not item or not self._selected_image_ids:
             return
-        tag_name = item.text()
+        tag_name = item.data(Qt.ItemDataRole.UserRole)
         for image_id in self._selected_image_ids:
             db.remove_tag_from_image(image_id, tag_name)
         self.refresh()
 
     def _on_tag_clicked(self, item: QListWidgetItem):
         tag_name = item.data(Qt.ItemDataRole.UserRole) or item.text()
+        self._btn_clear.setEnabled(True)
         self.tag_filter_changed.emit(tag_name)
