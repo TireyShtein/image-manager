@@ -155,6 +155,10 @@ class MainWindow(QMainWindow):
         act_cancel_sort.triggered.connect(self._cancel_rating_sort)
         ai_menu.addAction(act_cancel_sort)
 
+    def _set_counter_progress_visible(self, visible: bool):
+        self._progress_counter.setVisible(visible)
+        self._progress.setVisible(visible)
+
     def _build_statusbar(self):
         self._statusbar = QStatusBar()
         self.setStatusBar(self._statusbar)
@@ -164,6 +168,13 @@ class MainWindow(QMainWindow):
 
         self._selected_label = QLabel("")
         self._statusbar.addWidget(self._selected_label)
+
+        self._progress_counter = QLabel("")
+        self._progress_counter.setFixedWidth(80)
+        self._progress_counter.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._progress_counter.setStyleSheet("color: #ffffff;")
+        self._progress_counter.setVisible(False)
+        self._statusbar.addPermanentWidget(self._progress_counter)
 
         self._progress = QProgressBar()
         self._progress.setFixedWidth(200)
@@ -429,9 +440,10 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Busy", "WD14 tagging already running.")
             return
 
-        self._progress.setVisible(True)
+        self._set_counter_progress_visible(True)
         self._progress.setRange(0, len(image_ids))
         self._progress.setValue(0)
+        self._progress_counter.setText(f"0 / {len(image_ids)}")
         self._status_label.setText(f"Tagging {len(image_ids)} image(s) with WD14…")
 
         self._wd14_worker = WD14Worker(image_ids)
@@ -447,6 +459,7 @@ class MainWindow(QMainWindow):
 
     def _on_wd14_progress(self, current: int, total: int):
         self._progress.setValue(current)
+        self._progress_counter.setText(f"{current} / {total}")
 
     def _on_wd14_done(self, image_id: int, tags: list):
         self._tag_refresh_timer.start()
@@ -455,7 +468,7 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"WD14 error on image {image_id}: {msg}")
 
     def _on_wd14_finished(self):
-        self._progress.setVisible(False)
+        self._set_counter_progress_visible(False)
         self._status_label.setText("WD14 tagging complete.")
         self._tag_refresh_timer.start()
 
@@ -494,9 +507,10 @@ class MainWindow(QMainWindow):
         if not nsfw_folder:
             return
 
-        self._progress.setVisible(True)
+        self._set_counter_progress_visible(True)
         self._progress.setRange(0, sfw_count + nsfw_count)
         self._progress.setValue(0)
+        self._progress_counter.setText(f"0 / {sfw_count + nsfw_count}")
         self._status_label.setText(f"Sorting {sfw_count + nsfw_count} image(s)…")
 
         self._rating_sort_worker = RatingSortWorker(self._current_folder, sfw_folder, nsfw_folder)
@@ -512,6 +526,7 @@ class MainWindow(QMainWindow):
 
     def _on_sort_progress(self, current: int, total: int):
         self._progress.setValue(current)
+        self._progress_counter.setText(f"{current} / {total}")
 
     def _on_sort_image_done(self, image_id: int, dest: str):
         self._gallery.remove_image(image_id)
@@ -520,7 +535,7 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"Sort error on image {image_id}: {msg}")
 
     def _on_sort_finished(self, sfw: int, nsfw: int, skipped: int):
-        self._progress.setVisible(False)
+        self._set_counter_progress_visible(False)
         self._status_label.setText(
             f"Sort complete: {sfw} \u2192 SFW, {nsfw} \u2192 NSFW, {skipped} skipped."
         )
