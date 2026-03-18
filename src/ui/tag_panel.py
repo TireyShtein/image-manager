@@ -89,23 +89,6 @@ class TagPanel(QWidget):
         self._selected_list.currentItemChanged.connect(self._on_selected_list_item_changed)
         layout.addWidget(self._selected_list)
 
-        row = QHBoxLayout()
-        self._tag_input = QLineEdit()
-        self._tag_input.setPlaceholderText("New tag…")
-        self._tag_input.setEnabled(False)
-        self._tag_input.returnPressed.connect(self._add_tag)
-        row.addWidget(self._tag_input)
-
-        self._btn_add = QPushButton("+")
-        self._btn_add.setFixedWidth(28)
-        self._btn_add.setFixedHeight(self._tag_input.sizeHint().height())
-        self._btn_add.setToolTip("Add tag to selected images")
-        self._btn_add.setEnabled(False)
-        self._btn_add.clicked.connect(self._add_tag)
-        row.addWidget(self._btn_add)
-
-        layout.addLayout(row)
-
         self._btn_remove = QPushButton("Remove tag from selected")
         self._btn_remove.setStyleSheet(
             "QPushButton:disabled { color: rgba(255,255,255,0.30);"
@@ -138,9 +121,6 @@ class TagPanel(QWidget):
 
     def set_selected_images(self, image_ids: list[int]):
         self._selected_image_ids = image_ids
-        has_selection = bool(image_ids)
-        self._tag_input.setEnabled(has_selection)
-        self._btn_add.setEnabled(has_selection)
         self._btn_remove.setEnabled(False)
         self.refresh()
 
@@ -171,23 +151,12 @@ class TagPanel(QWidget):
                 label = name if count == n else f"{name} ({count}/{n})"
                 item = QListWidgetItem(label)
                 item.setData(Qt.ItemDataRole.UserRole, name)
+                item.setToolTip(name)
                 if count < n:
                     item.setForeground(QColor(255, 255, 255, 140))  # ~55% opacity
                 self._selected_list.addItem(item)
         else:
             self._selection_label.setText("Selected Image Tags")
-
-    def _add_tag(self):
-        name = " ".join(self._tag_input.text().split())
-        if not name or not self._selected_image_ids:
-            return
-        for image_id in self._selected_image_ids:
-            db.add_tag_to_image(image_id, name)
-        self._tag_input.clear()
-        self._search_input.blockSignals(True)
-        self._search_input.clear()
-        self._search_input.blockSignals(False)
-        self.refresh()
 
     def _remove_tag(self):
         item = self._selected_list.currentItem()

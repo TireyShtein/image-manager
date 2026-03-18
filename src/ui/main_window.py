@@ -302,9 +302,23 @@ class MainWindow(QMainWindow):
         menu.addAction("Move to…", lambda: self._move_images(image_ids))
         menu.addAction("Copy to…", lambda: self._copy_images(image_ids))
         menu.addSeparator()
+        tags_menu = menu.addMenu("Tags")
+        tags_menu.addAction("Add tag…", lambda: self._add_tag_to_images(image_ids))
+        menu.addSeparator()
         menu.addAction("Delete (Trash)", lambda: self._delete_images(image_ids, trash=True))
         menu.addAction("Delete Permanently", lambda: self._delete_images(image_ids, trash=False))
         menu.exec(pos)
+
+    def _add_tag_to_images(self, image_ids: list[int]):
+        name, ok = QInputDialog.getText(self, "Add Tag", "Tag name:")
+        if not ok:
+            return
+        name = " ".join(name.split())
+        if not name:
+            return
+        for image_id in image_ids:
+            db.add_tag_to_image(image_id, name)
+        self._tag_panel.refresh()
 
     def _view_image(self, image_id: int):
         row = db.get_image(image_id)
