@@ -11,8 +11,8 @@ from src.ui.image_viewer import ImageViewer, VIDEO_EXTENSIONS
 from src.ui.tag_panel import TagPanel
 from src.ui.album_panel import AlbumPanel
 from src.core import database as db, image_scanner, file_ops
-from src.ai.classifier_worker import ClassifierWorker
 from src.ai.wd14_worker import WD14Worker
+from src.ai.rating_sort_worker import RatingSortWorker
 
 
 class MainWindow(QMainWindow):
@@ -21,9 +21,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Image Manager")
         self.resize(1280, 800)
         self._current_folder: str | None = None
-        self._classifier_worker: ClassifierWorker | None = None
+        self._active_tag_filter: str = ""
+        self._active_album_id: int | None = None
         self._wd14_worker: WD14Worker | None = None
+        self._rating_sort_worker: RatingSortWorker | None = None
         self._settings = QSettings("ImageManager", "ImageManager")
+        self._sfw_mode: bool = self._settings.value("sfw_mode", False, type=bool)
         self._status_prefix = "Ready"
         _db_is_new = not db.db_exists()
         db.init_db()
@@ -34,6 +37,8 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_menu()
         self._build_statusbar()
+        if self._sfw_mode:
+            self._gallery.set_rating_filter(["rating:explicit", "rating:questionable"])
 
         # Debounced tag-panel refresh for AI signal handlers
         self._tag_refresh_timer = QTimer(self)
@@ -124,17 +129,14 @@ class MainWindow(QMainWindow):
         act_quit.triggered.connect(self.close)
         file_menu.addAction(act_quit)
 
+        view_menu = mb.addMenu("View")
+        self._act_sfw = QAction("SFW Mode", self)
+        self._act_sfw.setCheckable(True)
+        self._act_sfw.setChecked(self._sfw_mode)
+        self._act_sfw.triggered.connect(self._on_sfw_toggle)
+        view_menu.addAction(self._act_sfw)
+
         ai_menu = mb.addMenu("AI")
-        act_classify = QAction("Classify Selected Images…", self)
-        act_classify.setShortcut("Ctrl+R")
-        act_classify.triggered.connect(self._run_classification)
-        ai_menu.addAction(act_classify)
-
-        act_cancel = QAction("Cancel Classification", self)
-        act_cancel.triggered.connect(self._cancel_classification)
-        ai_menu.addAction(act_cancel)
-
-        ai_menu.addSeparator()
         act_wd14 = QAction("Tag with WD14…", self)
         act_wd14.setShortcut("Ctrl+T")
         act_wd14.triggered.connect(self._run_wd14_tagging)
@@ -143,6 +145,15 @@ class MainWindow(QMainWindow):
         act_cancel_wd14 = QAction("Cancel WD14 Tagging", self)
         act_cancel_wd14.triggered.connect(self._cancel_wd14_tagging)
         ai_menu.addAction(act_cancel_wd14)
+
+        ai_menu.addSeparator()
+        act_sort = QAction("Sort into SFW/NSFW by Tags…", self)
+        act_sort.triggered.connect(self._run_rating_sort)
+        ai_menu.addAction(act_sort)
+
+        act_cancel_sort = QAction("Cancel Sort", self)
+        act_cancel_sort.triggered.connect(self._cancel_rating_sort)
+        ai_menu.addAction(act_cancel_sort)
 
     def _build_statusbar(self):
         self._statusbar = QStatusBar()
@@ -175,6 +186,8 @@ class MainWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Open Folder")
         if folder:
             self._current_folder = folder
+            self._active_tag_filter = ""
+            self._active_album_id = None
             self._status_prefix = f"Folder: {folder}"
             self._gallery.load_folder(folder)
             self._folder_tree.set_root(folder)
@@ -190,6 +203,8 @@ class MainWindow(QMainWindow):
         if not parent or parent == self._current_folder:
             return
         self._current_folder = parent
+        self._active_tag_filter = ""
+        self._active_album_id = None
         self._status_prefix = f"Folder: {parent}"
         self._folder_tree.set_root(parent)
         self._gallery.load_folder(parent)
@@ -236,6 +251,8 @@ class MainWindow(QMainWindow):
 
     def _on_folder_selected(self, folder: str):
         self._current_folder = folder
+        self._active_tag_filter = ""
+        self._active_album_id = None
         self._status_prefix = f"Folder: {folder}"
         self._gallery.load_folder(folder)
         self._status_label.setText(self._status_prefix)
@@ -276,6 +293,8 @@ class MainWindow(QMainWindow):
         self._selected_label.setText(f"{count} selected")
 
     def _on_tag_filter(self, tag_name: str):
+        self._active_tag_filter = tag_name
+        self._active_album_id = None
         if tag_name:
             rows = db.get_images_by_tag(tag_name)
             shown = self._gallery.load_images(rows, empty_text=f"No images with tag '{tag_name}' found on disk")
@@ -288,6 +307,8 @@ class MainWindow(QMainWindow):
             self._gallery.load_folder(self._current_folder)
 
     def _on_album_selected(self, album_id: int):
+        self._active_album_id = album_id
+        self._active_tag_filter = ""
         rows = db.get_images_in_album(album_id)
         album = db.get_album(album_id)
         shown = self._gallery.load_images(rows, empty_text=f"No images in album '{album['name']}' found on disk")
@@ -295,6 +316,21 @@ class MainWindow(QMainWindow):
         suffix = f", {missing} missing from disk" if missing else ""
         self._status_prefix = f"Album: {album['name']} ({shown} images{suffix})"
         self._status_label.setText(self._status_prefix)
+
+    def _on_sfw_toggle(self, checked: bool):
+        self._sfw_mode = checked
+        self._settings.setValue("sfw_mode", checked)
+        excluded = ["rating:explicit", "rating:questionable"] if checked else []
+        self._gallery.set_rating_filter(excluded)
+        self._reload_current_view()
+
+    def _reload_current_view(self):
+        if self._active_album_id is not None:
+            self._on_album_selected(self._active_album_id)
+        elif self._active_tag_filter:
+            self._on_tag_filter(self._active_tag_filter)
+        elif self._current_folder:
+            self._gallery.load_folder(self._current_folder)
 
     def _on_empty_gallery_context_menu(self, pos):
         menu = QMenu(self)
@@ -381,73 +417,6 @@ class MainWindow(QMainWindow):
         if errors:
             QMessageBox.warning(self, "Delete Errors", "\n".join(errors))
 
-    # ------------------------------------------------------------------ AI
-
-    def _run_classification(self):
-        image_ids = self._gallery.get_selected_ids()
-        if not image_ids:
-            QMessageBox.information(self, "No Selection", "Select images to classify first.")
-            return
-
-        if self._classifier_worker and self._classifier_worker.isRunning():
-            QMessageBox.information(self, "Busy", "Classification already running.")
-            return
-
-        # Explain what is about to happen before asking for folders
-        reply = QMessageBox.information(
-            self, "AI Classification",
-            f"About to classify {len(image_ids)} image(s).\n\n"
-            "Step 1 — NSFW detection: images are sorted into a Safe (SFW) or "
-            "Not-Safe-For-Work (NSFW) folder.\n"
-            "Step 2 — Content tagging: top-3 ImageNet labels are added as tags.\n\n"
-            "You will now be asked to choose:\n"
-            "  • A destination folder for SFW images\n"
-            "  • A destination folder for NSFW images",
-            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
-        )
-        if reply != QMessageBox.StandardButton.Ok:
-            return
-
-        sfw_folder = QFileDialog.getExistingDirectory(self, "Select SFW destination folder")
-        if not sfw_folder:
-            return
-        nsfw_folder = QFileDialog.getExistingDirectory(self, "Select NSFW destination folder")
-        if not nsfw_folder:
-            return
-
-        self._progress.setVisible(True)
-        self._progress.setRange(0, len(image_ids))
-        self._progress.setValue(0)
-        self._status_label.setText(f"Classifying {len(image_ids)} images…")
-
-        self._classifier_worker = ClassifierWorker(image_ids, sfw_folder, nsfw_folder)
-        self._classifier_worker.progress.connect(self._on_classify_progress)
-        self._classifier_worker.image_done.connect(self._on_classify_result)
-        self._classifier_worker.error.connect(self._on_classify_error)
-        self._classifier_worker.finished_all.connect(self._on_classify_finished)
-        self._classifier_worker.start()
-
-    def _cancel_classification(self):
-        if self._classifier_worker:
-            self._classifier_worker.cancel()
-
-    def _on_classify_progress(self, current: int, total: int):
-        self._progress.setValue(current)
-
-    def _on_classify_result(self, image_id: int, stage: str, label: str, confidence: float):
-        if stage == "nsfw":
-            self._gallery.remove_image(image_id)
-        self._tag_refresh_timer.start()
-
-    def _on_classify_error(self, image_id: int, msg: str):
-        self._status_label.setText(f"Error on image {image_id}: {msg}")
-
-    def _on_classify_finished(self):
-        self._progress.setVisible(False)
-        self._status_label.setText("Classification complete.")
-        self._album_panel.refresh()
-        self._tag_refresh_timer.start()
-
     # ------------------------------------------------------------------ WD14
 
     def _run_wd14_tagging(self):
@@ -488,4 +457,73 @@ class MainWindow(QMainWindow):
     def _on_wd14_finished(self):
         self._progress.setVisible(False)
         self._status_label.setText("WD14 tagging complete.")
+        self._tag_refresh_timer.start()
+
+    # ------------------------------------------------------------------ Rating Sort
+
+    def _run_rating_sort(self):
+        if not self._current_folder:
+            QMessageBox.information(self, "No Folder", "Open a folder first.")
+            return
+
+        if self._rating_sort_worker and self._rating_sort_worker.isRunning():
+            QMessageBox.information(self, "Busy", "Sort already running.")
+            return
+
+        rows = db.get_images_with_ratings_in_folder(self._current_folder)
+        sfw_count  = sum(1 for r in rows if r["rating"] in ("rating:general", "rating:sensitive"))
+        nsfw_count = sum(1 for r in rows if r["rating"] in ("rating:explicit", "rating:questionable"))
+        skipped    = len(rows) - sfw_count - nsfw_count
+
+        reply = QMessageBox.information(
+            self, "Sort into SFW/NSFW by Tags",
+            f"Folder: {self._current_folder}\n\n"
+            f"  \u2022 {sfw_count} image(s) \u2192 SFW  (general, sensitive)\n"
+            f"  \u2022 {nsfw_count} image(s) \u2192 NSFW (explicit, questionable)\n"
+            f"  \u2022 {skipped} image(s) skipped (no rating tag)\n\n"
+            "Select destination folders next.",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Ok:
+            return
+
+        sfw_folder = QFileDialog.getExistingDirectory(self, "Select SFW destination folder")
+        if not sfw_folder:
+            return
+        nsfw_folder = QFileDialog.getExistingDirectory(self, "Select NSFW destination folder")
+        if not nsfw_folder:
+            return
+
+        self._progress.setVisible(True)
+        self._progress.setRange(0, sfw_count + nsfw_count)
+        self._progress.setValue(0)
+        self._status_label.setText(f"Sorting {sfw_count + nsfw_count} image(s)…")
+
+        self._rating_sort_worker = RatingSortWorker(self._current_folder, sfw_folder, nsfw_folder)
+        self._rating_sort_worker.progress.connect(self._on_sort_progress)
+        self._rating_sort_worker.image_done.connect(self._on_sort_image_done)
+        self._rating_sort_worker.error.connect(self._on_sort_error)
+        self._rating_sort_worker.finished_all.connect(self._on_sort_finished)
+        self._rating_sort_worker.start()
+
+    def _cancel_rating_sort(self):
+        if self._rating_sort_worker:
+            self._rating_sort_worker.cancel()
+
+    def _on_sort_progress(self, current: int, total: int):
+        self._progress.setValue(current)
+
+    def _on_sort_image_done(self, image_id: int, dest: str):
+        self._gallery.remove_image(image_id)
+
+    def _on_sort_error(self, image_id: int, msg: str):
+        self._status_label.setText(f"Sort error on image {image_id}: {msg}")
+
+    def _on_sort_finished(self, sfw: int, nsfw: int, skipped: int):
+        self._progress.setVisible(False)
+        self._status_label.setText(
+            f"Sort complete: {sfw} \u2192 SFW, {nsfw} \u2192 NSFW, {skipped} skipped."
+        )
+        self._gallery.load_folder(self._current_folder)
+        self._folder_tree.set_root(self._current_folder)
         self._tag_refresh_timer.start()

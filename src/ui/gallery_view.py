@@ -232,6 +232,7 @@ class GalleryView(QListView):
         self._gallery_model = GalleryModel(self)
         self._empty_text = "No media in this folder"
         self._loading = False
+        self._excluded_rating_tags: list[str] = []
         self.setModel(self._gallery_model)
         self.setViewMode(QListView.ViewMode.IconMode)
         self.setResizeMode(QListView.ResizeMode.Adjust)
@@ -314,6 +315,17 @@ class GalleryView(QListView):
         if len(rows) > 0:
             QTimer.singleShot(0, self._on_scroll)
 
+    def set_rating_filter(self, excluded: list[str]):
+        """Set which rating tags to hide. Pass [] to show everything."""
+        self._excluded_rating_tags = excluded
+
+    def _apply_rating_filter(self, rows) -> list:
+        if not self._excluded_rating_tags:
+            return rows
+        ids = [r["id"] for r in rows]
+        allowed_ids = set(db.filter_out_images_with_tags(ids, self._excluded_rating_tags))
+        return [r for r in rows if r["id"] in allowed_ids]
+
     def load_folder(self, folder: str):
         self._empty_text = "No media in this folder"
         from src.core.thumbnail_cache import VIDEO_EXTENSIONS
@@ -329,13 +341,14 @@ class GalleryView(QListView):
             pass
         sorted_paths = sorted(paths, key=lambda p: os.path.basename(p).lower())
         rows = db.get_or_create_images_batch(sorted_paths)
-        self._load_rows(rows)
+        self._load_rows(self._apply_rating_filter(rows))
 
     def load_images(self, rows, empty_text: str = "No images match this filter") -> int:
         self._empty_text = empty_text
         valid_rows = [r for r in rows if os.path.isfile(r["path"])]
-        self._load_rows(valid_rows)
-        return len(valid_rows)
+        filtered = self._apply_rating_filter(valid_rows)
+        self._load_rows(filtered)
+        return len(filtered)
 
     def load_paths(self, paths: list[str]):
         rows = []

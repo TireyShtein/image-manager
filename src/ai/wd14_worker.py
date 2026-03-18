@@ -20,10 +20,13 @@ class WD14Worker(QThread):
     def run(self):
         total = len(self.image_ids)
         image_map = db.get_images_batch(self.image_ids)
+        already_rated = db.get_image_ids_with_rating_tag(self.image_ids)
         for i, image_id in enumerate(self.image_ids):
             if self._cancelled:
                 break
             self.progress.emit(i, total)
+            if image_id in already_rated:
+                continue
             row = image_map.get(image_id)
             if not row:
                 continue

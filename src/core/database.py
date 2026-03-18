@@ -70,6 +70,7 @@ def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_image_path ON images(path);
             CREATE INDEX IF NOT EXISTS idx_tag_name ON tags(name);
+            CREATE INDEX IF NOT EXISTS idx_image_tags_tag_id ON image_tags(tag_id);
         """)
 
 
@@ -272,6 +273,54 @@ def get_tags_for_images(image_ids: list) -> list:
             f"GROUP BY t.id ORDER BY t.name",
             image_ids
         ).fetchall()
+
+
+def get_images_with_ratings_in_folder(folder: str) -> list:
+    """Returns rows (id, path, rating) for images directly inside folder (non-recursive).
+    rating is the rating:* tag name, or None if untagged."""
+    folder_prefix = folder.rstrip('/\\') + os.sep
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT i.id, i.path, "
+            "  (SELECT t2.name FROM tags t2 "
+            "   JOIN image_tags it2 ON t2.id = it2.tag_id "
+            "   WHERE it2.image_id = i.id AND t2.name LIKE 'rating:%' LIMIT 1) AS rating "
+            "FROM images i "
+            "WHERE i.path LIKE ? AND i.path NOT LIKE ?",
+            (folder_prefix + '%', folder_prefix + '%' + os.sep + '%'),
+        ).fetchall()
+
+
+def filter_out_images_with_tags(image_ids: list[int], excluded_tags: list[str]) -> list[int]:
+    """Return subset of image_ids that have NONE of the excluded_tags."""
+    if not image_ids or not excluded_tags:
+        return image_ids
+    placeholders_ids = ",".join("?" * len(image_ids))
+    placeholders_tags = ",".join("?" * len(excluded_tags))
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT DISTINCT it.image_id FROM image_tags it "
+            f"JOIN tags t ON t.id = it.tag_id "
+            f"WHERE it.image_id IN ({placeholders_ids}) AND t.name IN ({placeholders_tags})",
+            image_ids + excluded_tags,
+        ).fetchall()
+        excluded_set = {row[0] for row in rows}
+        return [iid for iid in image_ids if iid not in excluded_set]
+
+
+def get_image_ids_with_rating_tag(image_ids: list[int]) -> set[int]:
+    """Return set of image_ids that already have any rating:* tag."""
+    if not image_ids:
+        return set()
+    placeholders = ",".join("?" * len(image_ids))
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT DISTINCT it.image_id FROM image_tags it "
+            f"JOIN tags t ON t.id = it.tag_id "
+            f"WHERE it.image_id IN ({placeholders}) AND t.name LIKE 'rating:%'",
+            image_ids,
+        ).fetchall()
+        return {row[0] for row in rows}
 
 
 def get_images_by_tag(tag_name: str) -> list:
