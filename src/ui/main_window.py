@@ -2,7 +2,7 @@ import os
 from PyQt6.QtWidgets import (QMainWindow, QPushButton, QWidget, QHBoxLayout, QVBoxLayout,
                               QSplitter, QStatusBar, QProgressBar, QLabel,
                               QFileDialog, QMessageBox, QInputDialog, QMenu,
-                              QApplication)
+                              QApplication, QDialog)
 from PyQt6.QtCore import Qt, QThread, QSettings, QTimer
 from PyQt6.QtGui import QAction
 from src.ui.folder_tree import FolderTree
@@ -119,21 +119,25 @@ class MainWindow(QMainWindow):
 
         splitter.addWidget(gallery_container)
 
-        # Right: tag + album panels stacked
-        right = QSplitter(Qt.Orientation.Vertical)
+        # Right: tag panel only (album panel moved to floating dialog)
+        right = QWidget()
         right.setMinimumWidth(180)
         right.setMaximumWidth(280)
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
 
         self._tag_panel = TagPanel()
         self._tag_panel.tag_filter_changed.connect(self._on_tag_filter)
-        right.addWidget(self._tag_panel)
-
-        self._album_panel = AlbumPanel()
-        self._album_panel.album_selected.connect(self._on_album_selected)
-        right.addWidget(self._album_panel)
+        right_layout.addWidget(self._tag_panel)
 
         splitter.addWidget(right)
         splitter.setStretchFactor(1, 1)
+
+        # Album panel: instantiated but shown on demand as a floating dialog
+        self._album_panel = AlbumPanel()
+        self._album_panel.album_selected.connect(self._on_album_selected)
+        self._album_dialog: QDialog | None = None
 
     def _build_menu(self):
         mb = self.menuBar()
@@ -164,6 +168,10 @@ class MainWindow(QMainWindow):
         self._act_sfw.setChecked(self._sfw_mode)
         self._act_sfw.triggered.connect(self._on_sfw_toggle)
         view_menu.addAction(self._act_sfw)
+        view_menu.addSeparator()
+        act_albums = QAction("Albums…", self)
+        act_albums.triggered.connect(self._show_album_dialog)
+        view_menu.addAction(act_albums)
 
         ai_menu = mb.addMenu("AI")
         act_wd14 = QAction("Tag with WD14…", self)
@@ -300,6 +308,35 @@ class MainWindow(QMainWindow):
         self._tag_panel.clear_search()
         self._update_go_up_button()
 
+    def _open_location_in_tree(self, image_ids: list[int]):
+        if not image_ids:
+            return
+        row = db.get_image(image_ids[0])
+        if not row:
+            return
+        parent_dir = os.path.dirname(row["path"])
+        if not os.path.isdir(parent_dir):
+            return
+        self._current_folder = parent_dir
+        self._active_tag_filter = ""
+        self._active_album_id = None
+        self._status_prefix = f"Folder: {parent_dir}"
+        self._folder_tree.set_root(parent_dir)
+        self._folder_tree.navigate_to(parent_dir)
+        self._gallery.load_folder(parent_dir)
+        self._status_label.setText(self._status_prefix)
+        self._settings.setValue("last_folder", parent_dir)
+        self._tag_panel.clear_search()
+        self._update_go_up_button()
+        # Highlight the revealed image(s) in the tree after the model loads
+        paths = []
+        for iid in image_ids:
+            r = db.get_image(iid)
+            if r and os.path.dirname(r["path"]) == parent_dir:
+                paths.append(r["path"])
+        if paths:
+            self._folder_tree.select_files(paths)
+
     def _on_tree_files_selected(self, paths: list[str]):
         self._gallery.load_paths(paths)
         self._status_label.setText(f"{len(paths)} file(s) selected in tree")
@@ -356,6 +393,19 @@ class MainWindow(QMainWindow):
             self._status_prefix = f"Folder: {self._current_folder}"
             self._gallery.load_folder(self._current_folder)
 
+    def _show_album_dialog(self):
+        if self._album_dialog is None:
+            self._album_dialog = QDialog(self)
+            self._album_dialog.setWindowTitle("Albums")
+            self._album_dialog.resize(260, 400)
+            self._album_dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+            dlg_layout = QVBoxLayout(self._album_dialog)
+            dlg_layout.setContentsMargins(0, 0, 0, 0)
+            dlg_layout.addWidget(self._album_panel)
+        self._album_dialog.show()
+        self._album_dialog.raise_()
+        self._album_dialog.activateWindow()
+
     def _on_album_selected(self, album_id: int):
         self._active_album_id = album_id
         self._active_tag_filter = ""
@@ -386,17 +436,21 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         menu.addAction("Open Folder…", self._open_folder)
         menu.addAction("Scan Folder into Library", self._scan_folder)
+        menu.addSeparator()
+        menu.addAction("Albums…", self._show_album_dialog)
         menu.exec(pos)
 
     def _on_context_menu(self, image_ids: list[int], pos):
         menu = QMenu(self)
         menu.addAction("View", lambda: self._view_image(image_ids[0]))
+        menu.addAction("Reveal in Tree", lambda: self._open_location_in_tree(image_ids))
         menu.addSeparator()
         menu.addAction("Move to…", lambda: self._move_images(image_ids))
         menu.addAction("Copy to…", lambda: self._copy_images(image_ids))
         menu.addSeparator()
         tags_menu = menu.addMenu("Tags")
         tags_menu.addAction("Add tag…", lambda: self._add_tag_to_images(image_ids))
+        menu.addAction("Albums…", self._show_album_dialog)
         menu.addSeparator()
         menu.addAction("Delete (Trash)", lambda: self._delete_images(image_ids, trash=True))
         menu.addAction("Delete Permanently", lambda: self._delete_images(image_ids, trash=False))

@@ -1,6 +1,6 @@
 import os
 from PyQt6.QtWidgets import QTreeView, QAbstractItemView
-from PyQt6.QtCore import pyqtSignal, QDir, QItemSelectionModel
+from PyQt6.QtCore import pyqtSignal, QDir, QItemSelectionModel, QTimer
 from PyQt6.QtGui import QFileSystemModel
 
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.tif'}
@@ -40,11 +40,16 @@ class FolderTree(QTreeView):
 
         self.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.clicked.connect(self._on_clicked)
+        self.doubleClicked.connect(self._on_double_clicked)
 
     def _on_clicked(self, index):
         path = self._model.filePath(index)
         if self._model.isDir(index):
             self.folder_selected.emit(path)
+
+    def _on_double_clicked(self, index):
+        if self._model.isDir(index):
+            self.set_root(self._model.filePath(index))
 
     def _on_selection_changed(self, selected, deselected):
         paths = []
@@ -68,3 +73,23 @@ class FolderTree(QTreeView):
         self.setCurrentIndex(index)
         self.expand(index)
         self.scrollTo(index)
+
+    def select_files(self, paths: list[str]):
+        """Highlight the given file paths in the tree.
+
+        Uses a short deferred call because QFileSystemModel populates
+        directory contents asynchronously after set_root().
+        """
+        def _do_select():
+            sel = self.selectionModel()
+            sel.clearSelection()
+            scroll_target = None
+            for path in paths:
+                index = self._model.index(path)
+                if index.isValid():
+                    sel.select(index, QItemSelectionModel.SelectionFlag.Select)
+                    if scroll_target is None:
+                        scroll_target = index
+            if scroll_target is not None:
+                self.scrollTo(scroll_target)
+        QTimer.singleShot(100, _do_select)

@@ -18,6 +18,7 @@ class TagPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._selected_image_ids: list[int] = []
+        self._active_filter_tag: str = ""
         self._setup_ui()
 
     def _setup_ui(self):
@@ -37,6 +38,11 @@ class TagPanel(QWidget):
         self._search_input.setCompleter(_completer)
 
         # --- Global tags list ---
+        layout.addSpacing(4)
+        top_sep = QFrame()
+        top_sep.setFrameShape(QFrame.Shape.HLine)
+        top_sep.setStyleSheet("color: rgba(255,255,255,0.15);")
+        layout.addWidget(top_sep)
         layout.addSpacing(4)
         all_tags_label = QLabel("All Tags")
         font = all_tags_label.font()
@@ -97,6 +103,7 @@ class TagPanel(QWidget):
 
     def clear_search(self):
         """Called by MainWindow on folder navigation to reset search state."""
+        self._active_filter_tag = ""
         self._search_input.blockSignals(True)
         self._search_input.clear()
         self._search_input.blockSignals(False)
@@ -105,6 +112,7 @@ class TagPanel(QWidget):
         self.refresh()
 
     def _clear_filter(self):
+        self._active_filter_tag = ""
         self._global_list.clearSelection()
         self._selected_list.clearSelection()
         self._search_input.blockSignals(True)
@@ -140,6 +148,8 @@ class TagPanel(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, row["name"])
             item.setToolTip("Click to filter gallery by this tag")
             self._global_list.addItem(item)
+            if row["name"] == self._active_filter_tag:
+                self._global_list.setCurrentItem(item)
 
         # Selected image tags list
         self._selected_list.clear()
@@ -173,5 +183,9 @@ class TagPanel(QWidget):
 
     def _on_tag_clicked(self, item: QListWidgetItem):
         tag_name = item.data(Qt.ItemDataRole.UserRole) or item.text()
+        if tag_name == self._active_filter_tag:
+            self._clear_filter()
+            return
+        self._active_filter_tag = tag_name
         self._btn_clear.setEnabled(True)
         self.tag_filter_changed.emit(tag_name)
