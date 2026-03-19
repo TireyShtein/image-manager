@@ -28,6 +28,7 @@ class MainWindow(QMainWindow):
         self._settings = QSettings("ImageManager", "ImageManager")
         self._sfw_mode: bool = self._settings.value("sfw_mode", False, type=bool)
         self._status_prefix = "Ready"
+        self._gallery_total: int = 0
         _db_is_new = not db.db_exists()
         db.init_db()
         if _db_is_new:
@@ -80,7 +81,12 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self._folder_tree)
         splitter.addWidget(left)
 
-        # Centre: gallery
+        # Centre: gallery + pagination bar
+        gallery_container = QWidget()
+        gallery_layout = QVBoxLayout(gallery_container)
+        gallery_layout.setContentsMargins(0, 0, 0, 0)
+        gallery_layout.setSpacing(0)
+
         self._gallery = GalleryView()
         self._gallery.image_double_clicked.connect(self._on_image_double_clicked)
         self._gallery.context_menu_requested.connect(self._on_context_menu)
@@ -88,7 +94,30 @@ class MainWindow(QMainWindow):
         self._gallery.thumbnails_loading.connect(self._on_thumbnails_loading)
         self._gallery.thumbnails_ready.connect(self._on_thumbnails_ready)
         self._gallery.empty_context_menu_requested.connect(self._on_empty_gallery_context_menu)
-        splitter.addWidget(self._gallery)
+        self._gallery.page_changed.connect(self._on_page_changed)
+        gallery_layout.addWidget(self._gallery, 1)
+
+        # Pagination bar
+        self._page_bar = QWidget()
+        page_layout = QHBoxLayout(self._page_bar)
+        page_layout.setContentsMargins(4, 3, 4, 3)
+        self._btn_prev_page = QPushButton("◀ Prev")
+        self._btn_prev_page.setFixedWidth(80)
+        self._btn_prev_page.clicked.connect(self._gallery.prev_page)
+        self._btn_next_page = QPushButton("Next ▶")
+        self._btn_next_page.setFixedWidth(80)
+        self._btn_next_page.clicked.connect(self._gallery.next_page)
+        self._page_label = QLabel("")
+        self._page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        page_layout.addWidget(self._btn_prev_page)
+        page_layout.addStretch()
+        page_layout.addWidget(self._page_label)
+        page_layout.addStretch()
+        page_layout.addWidget(self._btn_next_page)
+        self._page_bar.setVisible(False)
+        gallery_layout.addWidget(self._page_bar)
+
+        splitter.addWidget(gallery_container)
 
         # Right: tag + album panels stacked
         right = QSplitter(Qt.Orientation.Vertical)
@@ -171,7 +200,7 @@ class MainWindow(QMainWindow):
 
         self._progress_counter = QLabel("")
         self._progress_counter.setFixedWidth(80)
-        self._progress_counter.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._progress_counter.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         self._progress_counter.setStyleSheet("color: #ffffff;")
         self._progress_counter.setVisible(False)
         self._statusbar.addPermanentWidget(self._progress_counter)
@@ -280,10 +309,20 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"{self._status_prefix} — Loading {loaded}/{total}…")
 
     def _on_thumbnails_ready(self, count: int):
+        total = self._gallery_total if self._gallery_total else count
         if self._status_prefix.startswith("Folder:"):
-            self._status_label.setText(f"{self._status_prefix} ({count} images)")
+            self._status_label.setText(f"{self._status_prefix} ({total} images)")
         else:
             self._status_label.setText(self._status_prefix)
+
+    def _on_page_changed(self, page: int, page_count: int, total: int):
+        self._gallery_total = total
+        visible = page_count > 1
+        self._page_bar.setVisible(visible)
+        if visible:
+            self._page_label.setText(f"Page {page + 1} of {page_count}  ({total} total)")
+            self._btn_prev_page.setEnabled(page > 0)
+            self._btn_next_page.setEnabled(page < page_count - 1)
 
     def _make_image_nav_list(self) -> list[tuple[int, str]]:
         return [(iid, p) for iid, p in self._gallery.get_all_items()
@@ -491,9 +530,9 @@ class MainWindow(QMainWindow):
         reply = QMessageBox.information(
             self, "Sort into SFW/NSFW by Tags",
             f"Folder: {self._current_folder}\n\n"
-            f"  \u2022 {sfw_count} image(s) \u2192 SFW  (general, sensitive)\n"
-            f"  \u2022 {nsfw_count} image(s) \u2192 NSFW (explicit, questionable)\n"
-            f"  \u2022 {skipped} image(s) skipped (no rating tag)\n\n"
+            f"  • {sfw_count} image(s) → SFW  (general, sensitive)\n"
+            f"  • {nsfw_count} image(s) → NSFW (explicit, questionable)\n"
+            f"  • {skipped} image(s) skipped (no rating tag)\n\n"
             "Select destination folders next.",
             QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
         )
@@ -537,7 +576,7 @@ class MainWindow(QMainWindow):
     def _on_sort_finished(self, sfw: int, nsfw: int, skipped: int):
         self._set_counter_progress_visible(False)
         self._status_label.setText(
-            f"Sort complete: {sfw} \u2192 SFW, {nsfw} \u2192 NSFW, {skipped} skipped."
+            f"Sort complete: {sfw} → SFW, {nsfw} → NSFW, {skipped} skipped."
         )
         self._gallery.load_folder(self._current_folder)
         self._folder_tree.set_root(self._current_folder)

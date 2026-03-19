@@ -35,24 +35,29 @@ Core Layer (src/core/)
   file_ops.py         — move/copy/delete with DB path sync and trash support
 
 AI Layer (src/ai/)
-  ClassifierWorker    — QThread orchestrator; emits progress/image_done/error signals
-  nsfw_detector.py    — Stage 1: falconsai/nsfw_image_detection → moves to SFW/ or NSFW/
-  content_classifier.py — Stage 2: google/vit-base-patch16-224 → auto-tags top-3 ImageNet labels
-  WD14Worker          — QThread for standalone WD14 tagging; emits progress/image_done/error signals
+  WD14Worker          — QThread for WD14 tagging; emits progress/image_done/error signals
   wd14_tagger.py      — SmilingWolf/wd-swinv2-tagger-v3 via wdtagger; tags general/character/rating
+  RatingSortWorker    — QThread for sorting images into SFW/NSFW folders by rating tags
 ```
 
 ### Threading model
 - Thumbnail generation: `QThreadPool` (global) + `ThumbnailLoader(QRunnable)` per image
-- AI classification: `ClassifierWorker(QThread)` — one worker at a time, cancellable
 - WD14 tagging: `WD14Worker(QThread)` — one worker at a time, cancellable
+- Rating sort: `RatingSortWorker(QThread)` — one worker at a time, cancellable
 - All cross-thread communication uses `pyqtSignal`
 
 ### Database
 SQLite with WAL journal mode and foreign keys enabled. Tables: `images`, `tags`, `image_tags`, `albums`, `album_images`, `ai_results`. All access goes through `src/core/database.py`. Connection opened per-call via `get_connection()` (context manager, Row factory).
 
+Indexes: `idx_image_path` on `images(path)`, `idx_tag_name` on `tags(name)`, `idx_image_tags_tag_id` on `image_tags(tag_id)` (added for tag-based filtering performance at scale).
+
 ### Gallery loading
-`GalleryView.load_folder(folder)` reads the filesystem directly (non-recursive) and auto-registers new files in the DB. This means no prior scan is needed to browse a folder. `load_paths(paths)` does the same for a list of individual files (used when files are selected directly in the tree).
+`GalleryView.load_folder(folder)` reads the filesystem directly (non-recursive) and auto-registers new files in the DB. This means no prior scan is needed to browse a folder. `load_paths(paths)` does the same for a list of individual files (used when files are selected directly in the tree). `load_images(rows)` loads an explicit list of DB rows (used by tag filter and album views).
+
+### Gallery rating filter (SFW Mode)
+`GalleryView` has a `_excluded_rating_tags: list[str]` attribute. `set_rating_filter(excluded)` sets which `rating:*` tags cause images to be hidden. Both `load_folder` and `load_images` run rows through `_apply_rating_filter()`, which calls `db.filter_out_images_with_tags(ids, excluded_tags)` to drop any image that has one of the excluded tags. Untagged images always pass through.
+
+`MainWindow` exposes this via a checkable **View → SFW Mode** action (persisted in `QSettings`). When enabled, `rating:explicit` and `rating:questionable` images are hidden across all gallery views (folder, tag filter, album). Toggling calls `_reload_current_view()` which replays the current folder/tag/album load.
 
 ### Thumbnail auto-sizing
 `GalleryView` dynamically resizes thumbnails based on image count via `_compute_thumb_size(count)` and `_SIZE_TIERS` (≤4→300px, ≤12→240px, ≤30→180px, ≤80→140px, ≤200→110px, ≤500→85px, ≤700→78px, else→70px). `GalleryModel` stores both `source_pix` (full 256px from cache) and `display_pix` (scaled to current display size) so re-scaling is in-memory only — no disk re-read.
@@ -68,8 +73,10 @@ Grid cell height is `thumb_px + label_px` where `label_px = max(20, thumb_px // 
 ### Folder tree scoping
 `FolderTree.set_root(path)` restricts the tree's visible root to a single folder (`setRootIndex`). Called by `MainWindow._open_folder()` and `_restore_last_folder()`. `navigate_to(path)` scrolls/selects without changing the root.
 
-### Persistent last folder
-`MainWindow` uses `QSettings("ImageManager", "ImageManager")` (Windows registry) to save and restore `last_folder`. On launch, `_restore_last_folder()` reloads the tree and gallery if the stored path still exists on disk.
+### Persistent settings
+`MainWindow` uses `QSettings("ImageManager", "ImageManager")` (Windows registry). Persisted keys:
+- `last_folder` — reopened on launch if still on disk
+- `sfw_mode` — SFW Mode toggle state (bool)
 
 ### Tag panel
 `TagPanel` has two separate `QListWidget`s:
@@ -84,11 +91,31 @@ The search bar has `QCompleter` autocomplete backed by a `QStringListModel` sour
 
 `db.get_tags_for_images(image_ids)` returns `(name, count)` rows via a single SQL query — count is how many of the given images have that tag.
 
+### Status bar layout
+```
+| status_label (stretch) | selected_label || progress_counter | [progress bar] |
+```
+- `_status_label`: folder name, tag filter info, AI progress text
+- `_selected_label`: "N selected"
+- `_progress_counter`: `"current / total"` label, 80px fixed width, right-aligned, hidden when idle — shown only during WD14 tagging and rating sort (not during folder scan, which uses an indeterminate bar)
+- `_progress`: `QProgressBar`, 200px fixed width, hidden when idle
+
+`_set_counter_progress_visible(bool)` toggles both `_progress_counter` and `_progress` together so they never desync.
+
 ### Media type definitions
 Image extensions live in `src/core/image_scanner.py:SUPPORTED_EXTENSIONS`. Video extensions live in `src/core/thumbnail_cache.py:VIDEO_EXTENSIONS`. Both sets are combined in `folder_tree.py` and `gallery_view.py`.
 
 ### AI models
 Models are downloaded from HuggingFace on first use and cached in `~/.cache/huggingface/`. All AI actions are manual-trigger only via the AI menu.
 
-- **Classify Selected Images (Ctrl+R):** Stage 1 NSFW detection (~150 MB Falconsai) sorts images into SFW/NSFW folders; Stage 2 content tagging (~300 MB ViT) adds top-3 ImageNet labels as tags.
-- **Tag with WD14… (Ctrl+T):** Tags images in-place using `SmilingWolf/wd-swinv2-tagger-v3` via the `wdtagger` package (~400 MB). Outputs general content tags, character tags, and a `rating:` tag (general/sensitive/questionable/explicit). Thresholds: general=0.35, character=0.9.
+- **Tag with WD14… (Ctrl+T):** Tags selected images in-place using `SmilingWolf/wd-swinv2-tagger-v3` via the `wdtagger` package (~400 MB). Outputs general content tags, character tags, and a `rating:` tag (`rating:general`, `rating:sensitive`, `rating:questionable`, `rating:explicit`). Thresholds: general=0.35, character=0.9. **Resumable:** `WD14Worker` skips images that already have any `rating:*` tag (via `db.get_image_ids_with_rating_tag()`), so cancelling and restarting a large batch is safe.
+
+- **Sort into SFW/NSFW by Tags… (AI menu):** Batch-moves images in the current folder into user-chosen SFW and NSFW destination folders based on their existing WD14 rating tags. `rating:general` and `rating:sensitive` → SFW folder; `rating:explicit` and `rating:questionable` → NSFW folder; untagged images are left in place. Shows a preview dialog with counts before asking for destination folders. Runs on `RatingSortWorker(QThread)`, cancellable. After completion, reloads the current folder and refreshes the folder tree.
+
+### Key database functions
+- `db.get_or_create_images_batch(paths)` — bulk register + fetch images in one transaction
+- `db.add_tags_to_image_batch(image_id, tag_names)` — bulk add tags in one transaction
+- `db.get_images_by_tag(tag_name)` — all images with a given tag
+- `db.filter_out_images_with_tags(image_ids, excluded_tags)` — returns subset of IDs with none of the excluded tags (used by SFW Mode)
+- `db.get_image_ids_with_rating_tag(image_ids)` — set of IDs that already have a `rating:*` tag (used by WD14 resumability)
+- `db.get_images_with_ratings_in_folder(folder)` — returns `(id, path, rating)` rows for images directly in a folder (non-recursive); `rating` is the `rating:*` tag or `None` (used by rating sort preview and worker)

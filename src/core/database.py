@@ -146,22 +146,30 @@ def get_or_create_images_batch(paths: list[str]) -> list:
     """Register many images in one transaction and return all rows.
 
     Uses INSERT OR IGNORE so existing rows are left untouched, then
-    fetches every row whose path is in *paths* with a single SELECT.
+    fetches every row whose path is in *paths*.  Paths are processed in
+    chunks of 500 to stay well within SQLite's variable limit.
     """
     if not paths:
         return []
     now = datetime.now().isoformat()
+    CHUNK = 500
+    all_rows = []
     with get_connection() as conn:
-        conn.executemany(
-            "INSERT OR IGNORE INTO images (path, filename, width, height, file_size, date_added, date_modified) "
-            "VALUES (?, ?, NULL, NULL, NULL, ?, ?)",
-            [(p, os.path.basename(p), now, now) for p in paths],
-        )
-        placeholders = ",".join("?" * len(paths))
-        return conn.execute(
-            f"SELECT * FROM images WHERE path IN ({placeholders}) ORDER BY filename",
-            paths,
-        ).fetchall()
+        for i in range(0, len(paths), CHUNK):
+            chunk = paths[i:i + CHUNK]
+            conn.executemany(
+                "INSERT OR IGNORE INTO images (path, filename, width, height, file_size, date_added, date_modified) "
+                "VALUES (?, ?, NULL, NULL, NULL, ?, ?)",
+                [(p, os.path.basename(p), now, now) for p in chunk],
+            )
+            placeholders = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                f"SELECT * FROM images WHERE path IN ({placeholders}) ORDER BY filename",
+                chunk,
+            ).fetchall()
+            all_rows.extend(rows)
+    # Re-sort all rows by filename since they came from separate chunks
+    return sorted(all_rows, key=lambda r: r["filename"].lower())
 
 
 def cleanup_stale_images() -> int:

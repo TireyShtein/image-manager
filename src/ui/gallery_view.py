@@ -25,6 +25,9 @@ _SIZE_TIERS = [
 ]
 _MIN_THUMB_SIZE = 70
 
+# Pagination
+PAGE_SIZE = 200
+
 
 def _compute_thumb_size(count: int) -> int:
     for max_count, size in _SIZE_TIERS:
@@ -43,6 +46,39 @@ def _get_placeholder(size: int) -> QPixmap:
         pix.fill(QColor(220, 220, 220))
         _placeholder_cache[size] = pix
     return _placeholder_cache[size]
+
+
+class GalleryPager:
+    """Holds all rows (lightweight dicts) and serves fixed-size pages."""
+    def __init__(self, rows: list):
+        # Store as plain dicts to avoid holding sqlite3.Row refs across pages
+        self._rows = [{"id": r["id"], "path": r["path"]} for r in rows]
+        self._page = 0
+
+    @property
+    def total(self) -> int:
+        return len(self._rows)
+
+    @property
+    def page_count(self) -> int:
+        return max(1, (len(self._rows) + PAGE_SIZE - 1) // PAGE_SIZE)
+
+    @property
+    def current_page(self) -> int:
+        return self._page
+
+    def get_page(self, page: int) -> list[dict]:
+        self._page = max(0, min(page, self.page_count - 1))
+        start = self._page * PAGE_SIZE
+        return self._rows[start:start + PAGE_SIZE]
+
+    def remove(self, image_id: int):
+        self._rows = [r for r in self._rows if r["id"] != image_id]
+        # Clamp page in case we removed the last item on the last page
+        self._page = min(self._page, self.page_count - 1)
+
+    def all_items(self) -> list[tuple[int, str]]:
+        return [(r["id"], r["path"]) for r in self._rows]
 
 
 class ThumbnailSignals(QObject):
@@ -69,7 +105,7 @@ class ThumbnailLoader(QRunnable):
 class GalleryModel(QAbstractListModel):
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Each item: {"id", "path", "source_pix": QPixmap|None, "display_pix": QPixmap|None}
+        # Each item: {"id", "path", "display_pix": QPixmap|None}
         self._items: list[dict] = []
         self._id_index: dict[int, int] = {}
         self._display_size: int = _compute_thumb_size(0)
@@ -84,7 +120,7 @@ class GalleryModel(QAbstractListModel):
     def set_images(self, rows):
         self.beginResetModel()
         self._items = [{"id": r["id"], "path": r["path"],
-                        "source_pix": None, "display_pix": None} for r in rows]
+                        "display_pix": None} for r in rows]
         self._id_index = {item["id"]: i for i, item in enumerate(self._items)}
         self._total = len(self._items)
         self._loaded = 0
@@ -102,11 +138,14 @@ class GalleryModel(QAbstractListModel):
         if size == self._display_size:
             return
         self._display_size = size
-        # Re-scale all already-loaded pixmaps
+        # Without source_pix we cannot re-scale in memory.  Clear all
+        # display pixmaps and let the lazy loader refetch from disk cache.
         for item in self._items:
-            if item["source_pix"] is not None:
-                item["display_pix"] = self._scale(item["source_pix"])
+            item["display_pix"] = None
+        self._queued = set()
         if self._items:
+            self._loaded = 0
+            self._total = len(self._items)
             self.dataChanged.emit(
                 self.index(0),
                 self.index(len(self._items) - 1),
@@ -123,7 +162,7 @@ class GalleryModel(QAbstractListModel):
     def request_thumbnails(self, first_row: int, last_row: int):
         """Queue thumbnail loading for rows in the visible range + margin.
 
-        Only queues items that have no source_pix and are not already queued.
+        Only queues items that have no display_pix and are not already queued.
         """
         start = max(0, first_row - _PREFETCH_MARGIN)
         end = min(len(self._items), last_row + _PREFETCH_MARGIN + 1)
@@ -131,7 +170,7 @@ class GalleryModel(QAbstractListModel):
             if i in self._queued:
                 continue
             item = self._items[i]
-            if item["source_pix"] is not None:
+            if item["display_pix"] is not None:
                 continue
             self._queued.add(i)
             loader = ThumbnailLoader(item["id"], item["path"], self._signals)
@@ -143,14 +182,12 @@ class GalleryModel(QAbstractListModel):
         keep_end = min(len(self._items), last_visible + _EVICT_MARGIN + 1)
         for i in range(0, keep_start):
             item = self._items[i]
-            if item["source_pix"] is not None:
-                item["source_pix"] = None
+            if item["display_pix"] is not None:
                 item["display_pix"] = None
                 self._queued.discard(i)
         for i in range(keep_end, len(self._items)):
             item = self._items[i]
-            if item["source_pix"] is not None:
-                item["source_pix"] = None
+            if item["display_pix"] is not None:
                 item["display_pix"] = None
                 self._queued.discard(i)
 
@@ -162,7 +199,6 @@ class GalleryModel(QAbstractListModel):
         if idx not in self._queued:
             return
         source = QPixmap(thumb_path)
-        self._items[idx]["source_pix"] = source
         self._items[idx]["display_pix"] = self._scale(source)
         index = self.index(idx)
         self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
@@ -226,6 +262,7 @@ class GalleryView(QListView):
     empty_context_menu_requested = pyqtSignal(object)  # global pos
     thumbnails_loading = pyqtSignal(int, int)  # (loaded, total)
     thumbnails_ready = pyqtSignal(int)          # total count
+    page_changed = pyqtSignal(int, int, int)    # (page, page_count, total)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -233,6 +270,7 @@ class GalleryView(QListView):
         self._empty_text = "No media in this folder"
         self._loading = False
         self._excluded_rating_tags: list[str] = []
+        self._pager: GalleryPager | None = None
         self.setModel(self._gallery_model)
         self.setViewMode(QListView.ViewMode.IconMode)
         self.setResizeMode(QListView.ResizeMode.Adjust)
@@ -304,16 +342,29 @@ class GalleryView(QListView):
 
     def _load_rows(self, rows):
         self.clearSelection()
-        # For non-empty folders, clear _loading immediately so the empty-state
-        # overlay doesn't flash.  With lazy loading there is no single
-        # "all thumbnails done" moment to wait for before clearing.
         self._loading = False
-        self._apply_size(_compute_thumb_size(len(rows)))
-        self._gallery_model.set_images(rows)
-        # Kick off initial visible-range loading after the model is populated
-        # and Qt has had a chance to lay out items.
-        if len(rows) > 0:
+        self._pager = GalleryPager(rows)
+        self._show_page(0)
+
+    def _show_page(self, page: int):
+        page_rows = self._pager.get_page(page)
+        self._apply_size(_compute_thumb_size(len(page_rows)))
+        self._gallery_model.set_images(page_rows)
+        if page_rows:
             QTimer.singleShot(0, self._on_scroll)
+        self.page_changed.emit(
+            self._pager.current_page,
+            self._pager.page_count,
+            self._pager.total,
+        )
+
+    def next_page(self):
+        if self._pager and self._pager.current_page + 1 < self._pager.page_count:
+            self._show_page(self._pager.current_page + 1)
+
+    def prev_page(self):
+        if self._pager and self._pager.current_page > 0:
+            self._show_page(self._pager.current_page - 1)
 
     def set_rating_filter(self, excluded: list[str]):
         """Set which rating tags to hide. Pass [] to show everything."""
@@ -333,10 +384,10 @@ class GalleryView(QListView):
         media_exts = SUPPORTED_EXTENSIONS | VIDEO_EXTENSIONS
         paths = []
         try:
-            for name in os.listdir(folder):
-                full = os.path.join(folder, name)
-                if os.path.isfile(full) and os.path.splitext(name)[1].lower() in media_exts:
-                    paths.append(full)
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    if entry.is_file() and os.path.splitext(entry.name)[1].lower() in media_exts:
+                        paths.append(entry.path)
         except PermissionError:
             pass
         sorted_paths = sorted(paths, key=lambda p: os.path.basename(p).lower())
@@ -411,14 +462,28 @@ class GalleryView(QListView):
             painter.setPen(QColor("#888888"))
             painter.drawText(QRect(rect.x(), cy + 24, rect.width(), 22),
                              Qt.AlignmentFlag.AlignHCenter,
-                             "Open a folder via File \u203a Open Folder")
+                             "Open a folder via File > Open Folder")
 
     def image_count(self) -> int:
         return self._gallery_model.count()
 
     def get_all_items(self) -> list[tuple[int, str]]:
+        if self._pager:
+            return self._pager.all_items()
         return self._gallery_model.get_all_items()
 
     def remove_image(self, image_id: int):
-        self._gallery_model.remove_image(image_id)
-        self._refresh_size()
+        if self._pager:
+            self._pager.remove(image_id)
+            # Try to remove from model first (it may be on the current page)
+            self._gallery_model.remove_image(image_id)
+            self._refresh_size()
+            # Update pagination controls
+            self.page_changed.emit(
+                self._pager.current_page,
+                self._pager.page_count,
+                self._pager.total,
+            )
+        else:
+            self._gallery_model.remove_image(image_id)
+            self._refresh_size()
