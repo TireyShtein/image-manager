@@ -2,7 +2,7 @@ import os
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
                               QLabel, QGraphicsView, QGraphicsScene)
 from PyQt6.QtCore import Qt, QRectF, QRunnable, QThreadPool, QObject, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QPixmap, QImage, QWheelEvent, QKeyEvent
+from PyQt6.QtGui import QPixmap, QImage, QFont, QWheelEvent, QKeyEvent
 import subprocess
 import sys
 
@@ -66,6 +66,16 @@ class ImageViewer(QDialog):
         self._view = ZoomableGraphicsView(self)
         layout.addWidget(self._view)
 
+        # Tag strip — shows tags for the current image
+        self._tags_label = QLabel("No tags")
+        self._tags_label.setWordWrap(True)
+        self._tags_label.setMaximumHeight(46)
+        self._tags_label.setStyleSheet(
+            "QLabel { color: #999; font-size: 10px; background: rgba(0,0,0,0.25);"
+            " padding: 4px 8px; border-top: 1px solid rgba(255,255,255,0.07); }"
+        )
+        layout.addWidget(self._tags_label)
+
         bar = QHBoxLayout()
         bar.setContentsMargins(8, 4, 8, 4)
 
@@ -111,11 +121,23 @@ class ImageViewer(QDialog):
         self._view._zoom_callback = self._on_zoom_changed
         self._update_nav_buttons()
 
+    def _refresh_tags(self):
+        from src.core import database as db
+        rows = db.get_tags_for_images([self.image_id])
+        if not rows:
+            self._tags_label.setText("No tags")
+            return
+        rating = [r["name"] for r in rows if r["name"].startswith("rating:")]
+        others = sorted(r["name"] for r in rows if not r["name"].startswith("rating:"))
+        all_tags = rating + others
+        self._tags_label.setText("  ·  ".join(all_tags))
+
     def _load_image(self):
+        self._refresh_tags()
         # Show a loading placeholder while decode runs on a background thread
         self._set_nav_enabled(False)
         loading_scene = QGraphicsScene()
-        loading_scene.addText("Loading…")
+        loading_scene.addText("Loading…", QFont("Arial", 2))
         self._view.setScene(loading_scene)
         self._meta_label.setText("")
         worker = _ImageLoadRunnable(self.image_path, self._load_signals)
