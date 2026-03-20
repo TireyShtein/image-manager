@@ -179,18 +179,20 @@ class MainWindow(QMainWindow):
         act_wd14.triggered.connect(self._run_wd14_tagging)
         ai_menu.addAction(act_wd14)
 
-        act_cancel_wd14 = QAction("Cancel WD14 Tagging", self)
-        act_cancel_wd14.triggered.connect(self._cancel_wd14_tagging)
-        ai_menu.addAction(act_cancel_wd14)
+        self._act_cancel_wd14 = QAction("Cancel WD14 Tagging", self)
+        self._act_cancel_wd14.setEnabled(False)
+        self._act_cancel_wd14.triggered.connect(self._cancel_wd14_tagging)
+        ai_menu.addAction(self._act_cancel_wd14)
 
         ai_menu.addSeparator()
         act_sort = QAction("Sort into SFW/NSFW by Tags…", self)
         act_sort.triggered.connect(self._run_rating_sort)
         ai_menu.addAction(act_sort)
 
-        act_cancel_sort = QAction("Cancel Sort", self)
-        act_cancel_sort.triggered.connect(self._cancel_rating_sort)
-        ai_menu.addAction(act_cancel_sort)
+        self._act_cancel_sort = QAction("Cancel Sort", self)
+        self._act_cancel_sort.setEnabled(False)
+        self._act_cancel_sort.triggered.connect(self._cancel_rating_sort)
+        ai_menu.addAction(self._act_cancel_sort)
 
     def _set_counter_progress_visible(self, visible: bool):
         self._progress_counter.setVisible(visible)
@@ -225,7 +227,8 @@ class MainWindow(QMainWindow):
         if folder and os.path.isdir(folder):
             self._current_folder = folder
             self._folder_tree.set_root(folder)
-            self._status_prefix = f"Folder: {folder}"
+            self._status_prefix = f"Folder: {os.path.basename(folder)}"
+            self._status_label.setToolTip(folder)
             self._gallery.load_folder(folder)
             self._status_label.setText(self._status_prefix)
             self._update_go_up_button()
@@ -236,7 +239,8 @@ class MainWindow(QMainWindow):
             self._current_folder = folder
             self._active_tag_filter = ""
             self._active_album_id = None
-            self._status_prefix = f"Folder: {folder}"
+            self._status_prefix = f"Folder: {os.path.basename(folder)}"
+            self._status_label.setToolTip(folder)
             self._gallery.load_folder(folder)
             self._folder_tree.set_root(folder)
             self._status_label.setText(self._status_prefix)
@@ -253,7 +257,8 @@ class MainWindow(QMainWindow):
         self._current_folder = parent
         self._active_tag_filter = ""
         self._active_album_id = None
-        self._status_prefix = f"Folder: {parent}"
+        self._status_prefix = f"Folder: {os.path.basename(parent)}"
+        self._status_label.setToolTip(parent)
         self._folder_tree.set_root(parent)
         self._gallery.load_folder(parent)
         self._status_label.setText(self._status_prefix)
@@ -284,6 +289,7 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"Scanning {folder}…")
         self._progress.setVisible(True)
         self._progress.setRange(0, 0)
+        self.setEnabled(False)
 
         def progress_cb(current, total):
             if total:
@@ -291,8 +297,11 @@ class MainWindow(QMainWindow):
                 self._progress.setValue(current)
             QApplication.processEvents()
 
-        added = image_scanner.scan_folder(folder, progress_cb)
-        self._progress.setVisible(False)
+        try:
+            added = image_scanner.scan_folder(folder, progress_cb)
+        finally:
+            self._progress.setVisible(False)
+            self.setEnabled(True)
         self._status_label.setText(f"Scanned: {added} new images added from {folder}")
         if self._current_folder == folder:
             self._gallery.load_folder(folder)
@@ -301,7 +310,8 @@ class MainWindow(QMainWindow):
         self._current_folder = folder
         self._active_tag_filter = ""
         self._active_album_id = None
-        self._status_prefix = f"Folder: {folder}"
+        self._status_prefix = f"Folder: {os.path.basename(folder)}"
+        self._status_label.setToolTip(folder)
         self._gallery.load_folder(folder)
         self._status_label.setText(self._status_prefix)
         self._settings.setValue("last_folder", folder)
@@ -320,7 +330,8 @@ class MainWindow(QMainWindow):
         self._current_folder = parent_dir
         self._active_tag_filter = ""
         self._active_album_id = None
-        self._status_prefix = f"Folder: {parent_dir}"
+        self._status_prefix = f"Folder: {os.path.basename(parent_dir)}"
+        self._status_label.setToolTip(parent_dir)
         self._folder_tree.set_root(parent_dir)
         self._folder_tree.navigate_to(parent_dir)
         self._gallery.load_folder(parent_dir)
@@ -377,7 +388,7 @@ class MainWindow(QMainWindow):
         self._tag_panel.set_selected_images(ids)
         self._album_panel.set_selected_images(ids)
         count = len(ids)
-        self._selected_label.setText(f"{count} selected")
+        self._selected_label.setText(f"{count} selected" if count > 0 else "")
 
     def _on_tag_filter(self, tag_name: str):
         self._active_tag_filter = tag_name
@@ -390,7 +401,8 @@ class MainWindow(QMainWindow):
             self._status_prefix = f"Tag filter: {tag_name} ({shown} images{suffix})"
             self._status_label.setText(self._status_prefix)
         elif self._current_folder:
-            self._status_prefix = f"Folder: {self._current_folder}"
+            self._status_prefix = f"Folder: {os.path.basename(self._current_folder)}"
+            self._status_label.setToolTip(self._current_folder)
             self._gallery.load_folder(self._current_folder)
 
     def _show_album_dialog(self):
@@ -523,14 +535,21 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ WD14
 
+    def _is_ai_busy(self) -> bool:
+        if self._wd14_worker and self._wd14_worker.isRunning():
+            return True
+        if self._rating_sort_worker and self._rating_sort_worker.isRunning():
+            return True
+        return False
+
     def _run_wd14_tagging(self):
         image_ids = self._gallery.get_selected_ids()
         if not image_ids:
             QMessageBox.information(self, "No Selection", "Select images to tag first.")
             return
 
-        if self._wd14_worker and self._wd14_worker.isRunning():
-            QMessageBox.information(self, "Busy", "WD14 tagging already running.")
+        if self._is_ai_busy():
+            QMessageBox.information(self, "Busy", "Another AI task is already running.")
             return
 
         self._set_counter_progress_visible(True)
@@ -538,12 +557,14 @@ class MainWindow(QMainWindow):
         self._progress.setValue(0)
         self._progress_counter.setText(f"0 / {len(image_ids)}")
         self._status_label.setText(f"Tagging {len(image_ids)} image(s) with WD14…")
+        self._act_cancel_wd14.setEnabled(True)
 
         self._wd14_worker = WD14Worker(image_ids)
         self._wd14_worker.progress.connect(self._on_wd14_progress)
         self._wd14_worker.image_done.connect(self._on_wd14_done)
         self._wd14_worker.error.connect(self._on_wd14_error)
         self._wd14_worker.finished_all.connect(self._on_wd14_finished)
+        self._wd14_worker.finished.connect(self._on_wd14_thread_finished)
         self._wd14_worker.start()
 
     def _cancel_wd14_tagging(self):
@@ -560,8 +581,15 @@ class MainWindow(QMainWindow):
     def _on_wd14_error(self, image_id: int, msg: str):
         self._status_label.setText(f"WD14 error on image {image_id}: {msg}")
 
+    def _on_wd14_thread_finished(self):
+        """Safety net: hides progress if finished_all never emitted (e.g. worker crash)."""
+        self._act_cancel_wd14.setEnabled(False)
+        if self._progress.isVisible():
+            self._set_counter_progress_visible(False)
+
     def _on_wd14_finished(self):
         self._set_counter_progress_visible(False)
+        self._act_cancel_wd14.setEnabled(False)
         self._status_label.setText("WD14 tagging complete.")
         self._tag_refresh_timer.start()
 
@@ -572,8 +600,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No Folder", "Open a folder first.")
             return
 
-        if self._rating_sort_worker and self._rating_sort_worker.isRunning():
-            QMessageBox.information(self, "Busy", "Sort already running.")
+        if self._is_ai_busy():
+            QMessageBox.information(self, "Busy", "Another AI task is already running.")
             return
 
         rows = db.get_images_with_ratings_in_folder(self._current_folder)
@@ -606,11 +634,13 @@ class MainWindow(QMainWindow):
         self._progress_counter.setText(f"0 / {sfw_count + nsfw_count}")
         self._status_label.setText(f"Sorting {sfw_count + nsfw_count} image(s)…")
 
+        self._act_cancel_sort.setEnabled(True)
         self._rating_sort_worker = RatingSortWorker(self._current_folder, sfw_folder, nsfw_folder)
         self._rating_sort_worker.progress.connect(self._on_sort_progress)
         self._rating_sort_worker.image_done.connect(self._on_sort_image_done)
         self._rating_sort_worker.error.connect(self._on_sort_error)
         self._rating_sort_worker.finished_all.connect(self._on_sort_finished)
+        self._rating_sort_worker.finished.connect(self._on_sort_thread_finished)
         self._rating_sort_worker.start()
 
     def _cancel_rating_sort(self):
@@ -627,8 +657,15 @@ class MainWindow(QMainWindow):
     def _on_sort_error(self, image_id: int, msg: str):
         self._status_label.setText(f"Sort error on image {image_id}: {msg}")
 
+    def _on_sort_thread_finished(self):
+        """Safety net: hides progress if finished_all never emitted (e.g. worker crash)."""
+        self._act_cancel_sort.setEnabled(False)
+        if self._progress.isVisible():
+            self._set_counter_progress_visible(False)
+
     def _on_sort_finished(self, sfw: int, nsfw: int, skipped: int):
         self._set_counter_progress_visible(False)
+        self._act_cancel_sort.setEnabled(False)
         self._status_label.setText(
             f"Sort complete: {sfw} → SFW, {nsfw} → NSFW, {skipped} skipped."
         )

@@ -57,7 +57,8 @@ class ImageViewer(QDialog):
         self._btn_prev.clicked.connect(lambda: self._navigate(-1))
         bar.addWidget(self._btn_prev)
 
-        self._path_label = QLabel(self.image_path)
+        self._path_label = QLabel(os.path.basename(self.image_path))
+        self._path_label.setToolTip(self.image_path)
         self._path_label.setStyleSheet("color: gray; font-size: 11px;")
         bar.addWidget(self._path_label, 1)
 
@@ -127,7 +128,8 @@ class ImageViewer(QDialog):
         self._current_index = (self._current_index + delta) % len(self._all_images)
         self.image_id, self.image_path = self._all_images[self._current_index]
         self.setWindowTitle(os.path.basename(self.image_path))
-        self._path_label.setText(self.image_path)
+        self._path_label.setText(os.path.basename(self.image_path))
+        self._path_label.setToolTip(self.image_path)
         self._load_image()
 
     def keyPressEvent(self, event: QKeyEvent):

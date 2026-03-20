@@ -97,9 +97,12 @@ class ThumbnailLoader(QRunnable):
 
     @pyqtSlot()
     def run(self):
-        thumb = thumbnail_cache.get_or_create_thumbnail(self.image_path)
-        if thumb:
-            self.signals.loaded.emit(self.image_id, thumb)
+        try:
+            thumb = thumbnail_cache.get_or_create_thumbnail(self.image_path)
+        except Exception:
+            thumb = None
+        # Always emit so the counter increments even on failure
+        self.signals.loaded.emit(self.image_id, thumb or "")
 
 
 class GalleryModel(QAbstractListModel):
@@ -198,13 +201,14 @@ class GalleryModel(QAbstractListModel):
         # If the item was evicted before the loader finished, discard the result
         if idx not in self._queued:
             return
-        source = QPixmap(thumb_path)
-        self._items[idx]["display_pix"] = self._scale(source)
-        index = self.index(idx)
-        self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
+        if thumb_path:
+            source = QPixmap(thumb_path)
+            self._items[idx]["display_pix"] = self._scale(source)
+            index = self.index(idx)
+            self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
         self._loaded += 1
         self._signals.progress.emit(self._loaded, self._total)
-        if self._loaded == self._total:
+        if self._loaded >= self._total:
             self._signals.all_loaded.emit()
 
     def rowCount(self, parent=QModelIndex()) -> int:
@@ -237,6 +241,7 @@ class GalleryModel(QAbstractListModel):
         idx = self._id_index.get(image_id)
         if idx is None:
             return
+        was_loaded = self._items[idx]["display_pix"] is not None
         self.beginRemoveRows(QModelIndex(), idx, idx)
         self._items.pop(idx)
         self._queued.discard(idx)
@@ -250,6 +255,12 @@ class GalleryModel(QAbstractListModel):
                 new_queued.add(q)
         self._queued = new_queued
         self.endRemoveRows()
+        # Adjust counters so all_loaded can still fire after removals
+        self._total = max(0, self._total - 1)
+        if was_loaded:
+            self._loaded = max(0, self._loaded - 1)
+        if self._loaded >= self._total:
+            self._signals.all_loaded.emit()
 
     def count(self) -> int:
         return len(self._items)
@@ -335,6 +346,7 @@ class GalleryView(QListView):
         self.setIconSize(QSize(thumb_px, thumb_px))
         self.setGridSize(QSize(thumb_px + 16, thumb_px + label_px))
         self._gallery_model.set_display_size(thumb_px)
+        QTimer.singleShot(0, self._on_scroll)  # retrigger lazy loading after size change
 
     def _refresh_size(self):
         count = self._gallery_model.count()

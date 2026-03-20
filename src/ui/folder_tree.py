@@ -79,9 +79,13 @@ class FolderTree(QTreeView):
 
         Uses a short deferred call because QFileSystemModel populates
         directory contents asynchronously after set_root().
+        Signals are blocked during selection to prevent files_selected from
+        firing and overwriting the gallery view that was just loaded.
         """
         def _do_select():
             sel = self.selectionModel()
+            self.blockSignals(True)
+            sel.blockSignals(True)
             sel.clearSelection()
             scroll_target = None
             for path in paths:
@@ -92,4 +96,6 @@ class FolderTree(QTreeView):
                         scroll_target = index
             if scroll_target is not None:
                 self.scrollTo(scroll_target)
+            sel.blockSignals(False)
+            self.blockSignals(False)
         QTimer.singleShot(100, _do_select)
