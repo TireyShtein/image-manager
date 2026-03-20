@@ -14,6 +14,13 @@ from src.core import database as db, image_scanner, file_ops
 from src.ai.wd14_worker import WD14Worker
 from src.ai.rating_sort_worker import RatingSortWorker
 
+_CHIP_STYLE = (
+    "QPushButton { color: #dde; background: rgba(80,130,255,0.20);"
+    " border: 1px solid rgba(80,130,255,0.45); border-radius: 3px;"
+    " padding: 1px 7px; font-size: 11px; }"
+    "QPushButton:hover { background: rgba(80,130,255,0.35); }"
+)
+
 
 class ScanWorker(QThread):
     progress = pyqtSignal(int, int)
@@ -129,11 +136,24 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self._folder_tree)
         splitter.addWidget(left)
 
-        # Centre: gallery + pagination bar
+        # Centre: filter chip bar + gallery + pagination bar
         gallery_container = QWidget()
         gallery_layout = QVBoxLayout(gallery_container)
         gallery_layout.setContentsMargins(0, 0, 0, 0)
         gallery_layout.setSpacing(0)
+
+        # Filter chip bar — shown when a tag filter is active
+        self._filter_chip_bar = QWidget()
+        self._filter_chip_bar.setFixedHeight(30)
+        self._filter_chip_bar.setStyleSheet(
+            "background: rgba(255,255,255,0.04); border-bottom: 1px solid rgba(255,255,255,0.08);"
+        )
+        self._chip_layout = QHBoxLayout(self._filter_chip_bar)
+        self._chip_layout.setContentsMargins(8, 3, 8, 3)
+        self._chip_layout.setSpacing(5)
+        self._chip_layout.addStretch()
+        self._filter_chip_bar.setVisible(False)
+        gallery_layout.addWidget(self._filter_chip_bar)
 
         self._gallery = GalleryView()
         self._gallery.image_double_clicked.connect(self._on_image_double_clicked)
@@ -242,6 +262,35 @@ class MainWindow(QMainWindow):
         self._act_cancel_sort.triggered.connect(self._cancel_rating_sort)
         ai_menu.addAction(self._act_cancel_sort)
 
+    def _update_filter_chips(self, tag_names: list[str], mode: str = "AND"):
+        """Rebuild the filter chip bar. Pass empty list to hide it."""
+        layout = self._chip_layout
+        # Remove all widgets except the trailing stretch
+        while layout.count() > 1:
+            child = layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        if not tag_names:
+            self._filter_chip_bar.setVisible(False)
+            return
+        # Mode label
+        mode_label = QLabel(mode)
+        mode_label.setStyleSheet(
+            "QLabel { color: #aaa; font-size: 11px; font-weight: bold;"
+            " border: 1px solid rgba(255,255,255,0.2); border-radius: 3px; padding: 1px 5px; }"
+        )
+        layout.insertWidget(0, mode_label)
+        for i, name in enumerate(tag_names):
+            btn = QPushButton(f"{name}  ×")
+            btn.setStyleSheet(_CHIP_STYLE)
+            btn.setToolTip(f"Remove '{name}' from filter")
+            btn.clicked.connect(lambda checked, n=name: self._remove_filter_chip(n))
+            layout.insertWidget(i + 1, btn)
+        self._filter_chip_bar.setVisible(True)
+
+    def _remove_filter_chip(self, tag_name: str):
+        self._tag_panel.remove_filter_tag(tag_name)
+
     def _set_counter_progress_visible(self, visible: bool):
         self._progress_counter.setVisible(visible)
         self._progress.setVisible(visible)
@@ -255,6 +304,15 @@ class MainWindow(QMainWindow):
 
         self._selected_label = QLabel("")
         self._statusbar.addWidget(self._selected_label)
+
+        self._sfw_indicator = QLabel(" SFW ")
+        self._sfw_indicator.setStyleSheet(
+            "QLabel { color: #fff; background: #b45309; border-radius: 3px;"
+            " padding: 1px 5px; font-size: 11px; font-weight: bold; }"
+        )
+        self._sfw_indicator.setToolTip("SFW Mode is active — explicit/questionable images are hidden")
+        self._sfw_indicator.setVisible(self._sfw_mode)
+        self._statusbar.addPermanentWidget(self._sfw_indicator)
 
         self._progress_counter = QLabel("")
         self._progress_counter.setFixedWidth(80)
@@ -294,6 +352,7 @@ class MainWindow(QMainWindow):
             self._status_label.setText(self._status_prefix)
             self._settings.setValue("last_folder", folder)
             self._tag_panel.clear_search()
+            self._update_filter_chips([])
             self._update_go_up_button()
 
     def _go_up_folder(self):
@@ -312,6 +371,7 @@ class MainWindow(QMainWindow):
         self._status_label.setText(self._status_prefix)
         self._settings.setValue("last_folder", parent)
         self._tag_panel.clear_search()
+        self._update_filter_chips([])
         self._update_go_up_button()
 
     def _update_go_up_button(self):
@@ -365,6 +425,7 @@ class MainWindow(QMainWindow):
         self._status_label.setText(self._status_prefix)
         self._settings.setValue("last_folder", folder)
         self._tag_panel.clear_search()
+        self._update_filter_chips([])
         self._update_go_up_button()
 
     def _open_location_in_tree(self, image_ids: list[int]):
@@ -387,6 +448,7 @@ class MainWindow(QMainWindow):
         self._status_label.setText(self._status_prefix)
         self._settings.setValue("last_folder", parent_dir)
         self._tag_panel.clear_search()
+        self._update_filter_chips([])
         self._update_go_up_button()
         # Highlight the revealed image(s) in the tree after the model loads
         paths = []
@@ -401,6 +463,7 @@ class MainWindow(QMainWindow):
         self._gallery.load_paths(paths)
         self._status_label.setText(f"{len(paths)} file(s) selected in tree")
         self._tag_panel.clear_search()
+        self._update_filter_chips([])
 
     def _on_thumbnails_loading(self, loaded: int, total: int):
         self._status_label.setText(f"{self._status_prefix} — Loading {loaded}/{total}…")
@@ -443,13 +506,18 @@ class MainWindow(QMainWindow):
         self._active_tag_filter = tag_names
         self._active_tag_mode = mode
         self._active_album_id = None
+        self._update_filter_chips(tag_names, mode)
         if tag_names:
             rows = (db.get_images_by_tags_and(tag_names)
                     if mode == "AND" else db.get_images_by_tags_or(tag_names))
             connector = f" {mode} "
             label = (connector.join(tag_names) if len(tag_names) <= 2
                      else f"{tag_names[0]} {mode} +{len(tag_names) - 1} more")
-            loaded_images = self._gallery.load_images(rows, empty_text="No images match the tag filter")
+            loaded_images = self._gallery.load_images(
+                rows,
+                empty_text="No images match the tag filter",
+                empty_hint="Try switching to OR mode in the tag panel, or clear the filter",
+            )
             parts = []
             if loaded_images.sfw_hidden > 0:
                 parts.append(f"{loaded_images.sfw_hidden} hidden by SFW Mode")
@@ -458,10 +526,13 @@ class MainWindow(QMainWindow):
             suffix = f", {', '.join(parts)}" if parts else ""
             self._status_prefix = f"Tag filter: {label} ({loaded_images.shown} images{suffix})"
             self._status_label.setText(self._status_prefix)
-        elif self._current_folder:
-            self._status_prefix = f"Folder: {os.path.basename(self._current_folder)}"
-            self._status_label.setToolTip(self._current_folder)
-            self._gallery.load_folder(self._current_folder)
+        else:
+            # Filter cleared — reset mode tracking and return to folder view
+            self._active_tag_mode = "AND"
+            if self._current_folder:
+                self._status_prefix = f"Folder: {os.path.basename(self._current_folder)}"
+                self._status_label.setToolTip(self._current_folder)
+                self._gallery.load_folder(self._current_folder)
 
     def _show_album_dialog(self):
         if self._album_dialog is None:
@@ -497,6 +568,7 @@ class MainWindow(QMainWindow):
         excluded = ["rating:explicit", "rating:questionable"] if checked else []
         self._gallery.set_rating_filter(excluded)
         self._tag_panel.set_sfw_mode(checked)
+        self._sfw_indicator.setVisible(checked)
         self._reload_current_view()
 
     def _reload_current_view(self):

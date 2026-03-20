@@ -175,9 +175,23 @@ class TagPanel(QWidget):
         self._search_input.blockSignals(True)
         self._search_input.clear()
         self._search_input.blockSignals(False)
+        # Reset AND/OR mode to default so it doesn't bleed across folder navigations
+        self._filter_mode = "AND"
+        self._mode_btn.blockSignals(True)
+        self._mode_btn.setChecked(False)
+        self._mode_btn.setText("AND")
+        self._mode_btn.blockSignals(False)
         self._btn_clear.setText("Clear filters")
         self._btn_clear.setEnabled(False)
         self.refresh()
+
+    def remove_filter_tag(self, name: str):
+        """Remove a single tag from the active filter. Called by the chip bar."""
+        if name not in self._active_filter_tags:
+            return
+        self._active_filter_tags.discard(name)
+        self._refresh_global_list()
+        self.tag_filter_changed.emit(sorted(self._active_filter_tags), self._filter_mode)
 
     def _clear_filter(self):
         self._active_filter_tags.clear()

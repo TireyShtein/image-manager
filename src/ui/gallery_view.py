@@ -317,6 +317,7 @@ class GalleryView(QListView):
         super().__init__(parent)
         self._gallery_model = GalleryModel(self)
         self._empty_text = "No media in this folder"
+        self._empty_hint: str | None = None  # override for secondary hint text
         self._loading = False
         self._excluded_rating_tags: list[str] = []
         self._pager: GalleryPager | None = None
@@ -450,6 +451,7 @@ class GalleryView(QListView):
 
     def load_folder(self, folder: str):
         self._empty_text = "No media in this folder"
+        self._empty_hint = None
         self._loading = True
         self._load_token += 1
         token = self._load_token
@@ -464,8 +466,10 @@ class GalleryView(QListView):
             return  # stale — user navigated away before this finished
         self._load_rows(self._apply_rating_filter(rows))
 
-    def load_images(self, rows, empty_text: str = "No images match this filter") -> LoadResult:
+    def load_images(self, rows, empty_text: str = "No images match this filter",
+                    empty_hint: str | None = None) -> LoadResult:
         self._empty_text = empty_text
+        self._empty_hint = empty_hint
         valid_rows = [r for r in rows if os.path.isfile(r["path"])]
         filtered = self._apply_rating_filter(valid_rows)
         shown = len(filtered)
@@ -525,9 +529,12 @@ class GalleryView(QListView):
             font.setWeight(QFont.Weight.Normal)
             painter.setFont(font)
             painter.setPen(QColor("#888888"))
+            if self._empty_hint is not None:
+                hint = self._empty_hint
+            else:
+                hint = "Open a folder via File > Open Folder"
             painter.drawText(QRect(rect.x(), cy + 24, rect.width(), 22),
-                             Qt.AlignmentFlag.AlignHCenter,
-                             "Open a folder via File > Open Folder")
+                             Qt.AlignmentFlag.AlignHCenter, hint)
 
     def image_count(self) -> int:
         return self._gallery_model.count()
