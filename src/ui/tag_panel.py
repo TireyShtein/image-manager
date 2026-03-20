@@ -53,7 +53,7 @@ class TagPanel(QWidget):
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(150)
-        self._search_timer.timeout.connect(self.refresh)
+        self._search_timer.timeout.connect(self._refresh_global_list)
         self._search_input.textChanged.connect(lambda _: self._search_timer.start())
         layout.addWidget(self._search_input)
         self._completer_model = QStringListModel(self)
@@ -158,7 +158,7 @@ class TagPanel(QWidget):
         self._active_filter_tags.clear()
         self._btn_clear.setText("Clear filters")
         self._btn_clear.setEnabled(False)
-        self.refresh()
+        self._refresh_global_list()
         self.tag_filter_changed.emit([], self._filter_mode)
 
     def _on_selected_list_item_changed(self, current, previous):
@@ -172,12 +172,17 @@ class TagPanel(QWidget):
         else:
             self._btn_remove.setText("Remove tag from selected")
         self._btn_remove.setEnabled(False)
-        self.refresh()
+        self._refresh_selected_tags()
 
     def refresh(self):
+        """Full refresh — rebuilds both the global tag list and the selected image tags."""
+        self._refresh_global_list()
+        self._refresh_selected_tags()
+
+    def _refresh_global_list(self):
+        """Rebuild the All Tags list. Called on search, sort, folder nav, tag add/remove."""
         query = self._search_input.text().strip()
 
-        # ── Global tags list ────────────────────────────────────────────
         self._global_list.blockSignals(True)
         self._global_list.clear()
 
@@ -185,13 +190,11 @@ class TagPanel(QWidget):
         self._completer_model.setStringList([r["name"] for r in all_rows])
         rows = db.search_tags_with_counts(query) if query else all_rows
 
-        # Sort
         if self._sort_by_count:
             rows = sorted(rows, key=lambda r: r["count"], reverse=True)
         else:
             rows = sorted(rows, key=lambda r: r["name"].lower())
 
-        # Group by category
         groups: dict[str, list] = {"rating": [], "general": []}
         for row in rows:
             groups[_tag_category(row["name"])].append(row)
@@ -201,7 +204,6 @@ class TagPanel(QWidget):
             if not cat_rows:
                 continue
 
-            # Category header item (visible but not checkable)
             header = QListWidgetItem(f"  {_CATEGORY_LABEL[cat_key]}  ({len(cat_rows)})")
             header.setFlags(Qt.ItemFlag.ItemIsEnabled)
             header.setForeground(QColor(160, 160, 160))
@@ -238,12 +240,12 @@ class TagPanel(QWidget):
 
         self._global_list.blockSignals(False)
 
-        # Update clear button label
         n = len(self._active_filter_tags)
         self._btn_clear.setText(f"Clear filters ({n})" if n else "Clear filters")
         self._btn_clear.setEnabled(bool(n))
 
-        # ── Selected image tags list (unaffected by search) ──────────────
+    def _refresh_selected_tags(self):
+        """Rebuild only the Selected Image Tags section. Called on every image selection change."""
         self._selected_list.clear()
         if self._selected_image_ids:
             n_imgs = len(self._selected_image_ids)
@@ -293,7 +295,7 @@ class TagPanel(QWidget):
     def _on_sort_toggled(self, checked: bool):
         self._sort_by_count = not checked
         self._sort_btn.setText("A-Z" if checked else "Count ↓")
-        self.refresh()
+        self._refresh_global_list()
 
     def _remove_tag(self):
         item = self._selected_list.currentItem()
