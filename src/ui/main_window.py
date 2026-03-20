@@ -2,8 +2,8 @@ import os
 from PyQt6.QtWidgets import (QMainWindow, QPushButton, QWidget, QHBoxLayout, QVBoxLayout,
                               QSplitter, QStatusBar, QProgressBar, QLabel,
                               QFileDialog, QMessageBox, QInputDialog, QMenu,
-                              QApplication, QDialog)
-from PyQt6.QtCore import Qt, QThread, QSettings, QTimer
+                              QApplication, QDialog, QStyle)
+from PyQt6.QtCore import Qt, QThread, QSettings, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction
 from src.ui.folder_tree import FolderTree
 from src.ui.gallery_view import GalleryView
@@ -13,6 +13,50 @@ from src.ui.album_panel import AlbumPanel
 from src.core import database as db, image_scanner, file_ops
 from src.ai.wd14_worker import WD14Worker
 from src.ai.rating_sort_worker import RatingSortWorker
+
+
+class ScanWorker(QThread):
+    progress = pyqtSignal(int, int)
+    finished_scan = pyqtSignal(int)  # number of images added
+
+    def __init__(self, folder: str, parent=None):
+        super().__init__(parent)
+        self._folder = folder
+
+    def run(self):
+        def cb(current, total):
+            self.progress.emit(current, total)
+        added = image_scanner.scan_folder(self._folder, cb)
+        self.finished_scan.emit(added)
+
+
+class FileOpWorker(QThread):
+    progress = pyqtSignal(int, int)
+    item_done = pyqtSignal(int)            # image_id
+    item_error = pyqtSignal(int, str)
+    finished_op = pyqtSignal(int, list)    # (success_count, error_msgs)
+
+    def __init__(self, op: str, image_ids: list, dest: str, parent=None):
+        super().__init__(parent)
+        self._op = op
+        self._image_ids = image_ids
+        self._dest = dest
+
+    def run(self):
+        errors, success = [], 0
+        total = len(self._image_ids)
+        for i, image_id in enumerate(self._image_ids):
+            try:
+                if self._op == "move":
+                    file_ops.move_image(image_id, self._dest)
+                else:
+                    file_ops.copy_image(image_id, self._dest)
+                success += 1
+                self.item_done.emit(image_id)
+            except Exception as e:
+                errors.append(str(e))
+            self.progress.emit(i + 1, total)
+        self.finished_op.emit(success, errors)
 
 
 class MainWindow(QMainWindow):
@@ -25,6 +69,8 @@ class MainWindow(QMainWindow):
         self._active_album_id: int | None = None
         self._wd14_worker: WD14Worker | None = None
         self._rating_sort_worker: RatingSortWorker | None = None
+        self._scan_worker: ScanWorker | None = None
+        self._file_op_worker: FileOpWorker | None = None
         self._settings = QSettings("ImageManager", "ImageManager")
         self._sfw_mode: bool = self._settings.value("sfw_mode", False, type=bool)
         self._status_prefix = "Ready"
@@ -286,22 +332,23 @@ class MainWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Scan Folder into Library")
         if not folder:
             return
+        if self._scan_worker and self._scan_worker.isRunning():
+            return
         self._status_label.setText(f"Scanning {folder}…")
         self._progress.setVisible(True)
         self._progress.setRange(0, 0)
-        self.setEnabled(False)
+        self._scan_worker = ScanWorker(folder, self)
+        self._scan_worker.progress.connect(self._on_scan_progress)
+        self._scan_worker.finished_scan.connect(lambda added: self._on_scan_finished(added, folder))
+        self._scan_worker.start()
 
-        def progress_cb(current, total):
-            if total:
-                self._progress.setRange(0, total)
-                self._progress.setValue(current)
-            QApplication.processEvents()
+    def _on_scan_progress(self, current: int, total: int):
+        if total:
+            self._progress.setRange(0, total)
+            self._progress.setValue(current)
 
-        try:
-            added = image_scanner.scan_folder(folder, progress_cb)
-        finally:
-            self._progress.setVisible(False)
-            self.setEnabled(True)
+    def _on_scan_finished(self, added: int, folder: str):
+        self._progress.setVisible(False)
         self._status_label.setText(f"Scanned: {added} new images added from {folder}")
         if self._current_folder == folder:
             self._gallery.load_folder(folder)
@@ -465,7 +512,11 @@ class MainWindow(QMainWindow):
         menu.addAction("Albums…", self._show_album_dialog)
         menu.addSeparator()
         menu.addAction("Delete (Trash)", lambda: self._delete_images(image_ids, trash=True))
-        menu.addAction("Delete Permanently", lambda: self._delete_images(image_ids, trash=False))
+        menu.addSeparator()
+        act_perm = QAction("⚠ Delete Permanently", self)
+        act_perm.triggered.connect(lambda: self._delete_images(image_ids, trash=False))
+        act_perm.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning))
+        menu.addAction(act_perm)
         menu.exec(pos)
 
     def _add_tag_to_images(self, image_ids: list[int]):
@@ -491,28 +542,39 @@ class MainWindow(QMainWindow):
         dest = QFileDialog.getExistingDirectory(self, "Move to Folder")
         if not dest:
             return
-        errors = []
-        for image_id in image_ids:
-            try:
-                file_ops.move_image(image_id, dest)
-                self._gallery.remove_image(image_id)
-            except Exception as e:
-                errors.append(str(e))
-        if errors:
-            QMessageBox.warning(self, "Move Errors", "\n".join(errors))
+        self._start_file_op("move", image_ids, dest)
 
     def _copy_images(self, image_ids: list[int]):
         dest = QFileDialog.getExistingDirectory(self, "Copy to Folder")
         if not dest:
             return
-        errors = []
-        for image_id in image_ids:
-            try:
-                file_ops.copy_image(image_id, dest)
-            except Exception as e:
-                errors.append(str(e))
+        self._start_file_op("copy", image_ids, dest)
+
+    def _start_file_op(self, op: str, image_ids: list[int], dest: str):
+        self._set_counter_progress_visible(True)
+        self._progress.setRange(0, len(image_ids))
+        self._progress.setValue(0)
+        self._progress_counter.setText(f"0 / {len(image_ids)}")
+        self._file_op_worker = FileOpWorker(op, image_ids, dest, self)
+        if op == "move":
+            self._file_op_worker.item_done.connect(self._gallery.remove_image)
+        self._file_op_worker.progress.connect(
+            lambda cur, tot: (self._progress.setValue(cur),
+                              self._progress_counter.setText(f"{cur} / {tot}"))
+        )
+        self._file_op_worker.finished_op.connect(
+            lambda success, errors: self._on_file_op_finished(op, success, errors)
+        )
+        self._file_op_worker.start()
+
+    def _on_file_op_finished(self, op: str, success: int, errors: list):
+        self._set_counter_progress_visible(False)
+        verb = "Moved" if op == "move" else "Copied"
+        self._status_label.setText(
+            f"{verb} {success} image(s)" + (f" — {len(errors)} failed" if errors else "")
+        )
         if errors:
-            QMessageBox.warning(self, "Copy Errors", "\n".join(errors))
+            QMessageBox.warning(self, f"{verb} Errors", "\n".join(errors))
 
     def _delete_images(self, image_ids: list[int], trash: bool):
         action = "trash" if trash else "permanently delete"
@@ -524,12 +586,17 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
         errors = []
+        deleted = 0
         for image_id in image_ids:
             try:
                 file_ops.delete_image(image_id, use_trash=trash)
                 self._gallery.remove_image(image_id)
+                deleted += 1
             except Exception as e:
                 errors.append(str(e))
+        self._status_label.setText(
+            f"Deleted {deleted} image(s)" + (f" — {len(errors)} failed" if errors else "")
+        )
         if errors:
             QMessageBox.warning(self, "Delete Errors", "\n".join(errors))
 
@@ -623,9 +690,11 @@ class MainWindow(QMainWindow):
 
         sfw_folder = QFileDialog.getExistingDirectory(self, "Select SFW destination folder")
         if not sfw_folder:
+            self._status_label.setText("Sort cancelled.")
             return
         nsfw_folder = QFileDialog.getExistingDirectory(self, "Select NSFW destination folder")
         if not nsfw_folder:
+            self._status_label.setText("Sort cancelled.")
             return
 
         self._set_counter_progress_visible(True)

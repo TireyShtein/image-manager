@@ -1,10 +1,27 @@
 import os
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
                               QLabel, QGraphicsView, QGraphicsScene)
-from PyQt6.QtCore import Qt, QRectF, QUrl
-from PyQt6.QtGui import QPixmap, QWheelEvent, QKeyEvent
+from PyQt6.QtCore import Qt, QRectF, QRunnable, QThreadPool, QObject, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QPixmap, QImage, QWheelEvent, QKeyEvent
 import subprocess
 import sys
+
+
+class _ImageLoadSignals(QObject):
+    loaded = pyqtSignal(object, str)  # (QImage, path)
+
+
+class _ImageLoadRunnable(QRunnable):
+    def __init__(self, path: str, signals: _ImageLoadSignals):
+        super().__init__()
+        self._path = path
+        self._signals = signals
+        self.setAutoDelete(True)
+
+    @pyqtSlot()
+    def run(self):
+        img = QImage(self._path)
+        self._signals.loaded.emit(img, self._path)
 
 VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.wmv', '.flv', '.m4v'}
 
@@ -29,6 +46,8 @@ class ImageViewer(QDialog):
             return
         self.resize(900, 700)
         self._fit_mode = True
+        self._load_signals = _ImageLoadSignals()
+        self._load_signals.loaded.connect(self._on_image_loaded)
         self._setup_ui()
         self._load_image()
 
@@ -92,12 +111,30 @@ class ImageViewer(QDialog):
         self._view._zoom_callback = self._on_zoom_changed
 
     def _load_image(self):
-        pixmap = QPixmap(self.image_path)
+        # Show a loading placeholder while decode runs on a background thread
+        self._set_nav_enabled(False)
+        loading_scene = QGraphicsScene()
+        loading_scene.addText("Loading…")
+        self._view.setScene(loading_scene)
+        self._meta_label.setText("")
+        worker = _ImageLoadRunnable(self.image_path, self._load_signals)
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_image_loaded(self, img: QImage, path: str):
+        # Ignore if user navigated away before this finished
+        if path != self.image_path:
+            return
+        if img.isNull():
+            scene = QGraphicsScene()
+            scene.addText("Failed to load image")
+            self._view.setScene(scene)
+            self._set_nav_enabled(True)
+            return
+        pixmap = QPixmap.fromImage(img)
         scene = QGraphicsScene()
         scene.addPixmap(pixmap)
         self._view.setScene(scene)
         self._view.setSceneRect(QRectF(pixmap.rect()))
-        # Metadata
         w, h = pixmap.width(), pixmap.height()
         try:
             size_b = os.path.getsize(self.image_path)
@@ -107,6 +144,12 @@ class ImageViewer(QDialog):
         self._meta_label.setText(f"{w}×{h}  {size_str}")
         self._fit_mode = True
         self._fit()
+        self._set_nav_enabled(True)
+
+    def _set_nav_enabled(self, enabled: bool):
+        has_nav = len(self._all_images) > 1
+        self._btn_prev.setEnabled(enabled and has_nav)
+        self._btn_next.setEnabled(enabled and has_nav)
 
     def showEvent(self, event):
         super().showEvent(event)

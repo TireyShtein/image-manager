@@ -149,7 +149,7 @@ class AlbumPanel(QWidget):
         if not item:
             return
         album_id = item.data(Qt.ItemDataRole.UserRole)
-        current_name = item.text().split(" (")[0]
+        current_name = item.text().rsplit(" (", 1)[0]
         new_name, ok = QInputDialog.getText(self, "Rename Album", "New name:", text=current_name)
         if ok and new_name.strip() and new_name.strip() != current_name:
             db.rename_album(album_id, new_name.strip())
@@ -160,7 +160,7 @@ class AlbumPanel(QWidget):
         if not item:
             return
         album_id = item.data(Qt.ItemDataRole.UserRole)
-        album_name = item.text().split(" (")[0]
+        album_name = item.text().rsplit(" (", 1)[0]
         reply = QMessageBox.question(self, "Delete Album",
                                      f"Delete album '{album_name}'? Images will not be deleted.",
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)

@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
                               QListWidgetItem, QPushButton, QLineEdit, QLabel,
                               QFrame, QInputDialog, QMessageBox, QCompleter)
-from PyQt6.QtCore import pyqtSignal, Qt, QStringListModel
+from PyQt6.QtCore import pyqtSignal, Qt, QStringListModel, QTimer
 from PyQt6.QtGui import QFont, QColor
 from src.core import database as db
 
@@ -29,7 +29,11 @@ class TagPanel(QWidget):
         self._search_input = QLineEdit()
         self._search_input.setPlaceholderText("Search tags…")
         self._search_input.setClearButtonEnabled(True)
-        self._search_input.textChanged.connect(self.refresh)
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(150)
+        self._search_timer.timeout.connect(self.refresh)
+        self._search_input.textChanged.connect(lambda _: self._search_timer.start())
         layout.addWidget(self._search_input)
         self._completer_model = QStringListModel(self)
         _completer = QCompleter(self._completer_model, self)

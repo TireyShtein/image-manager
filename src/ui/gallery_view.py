@@ -105,6 +105,34 @@ class ThumbnailLoader(QRunnable):
         self.signals.loaded.emit(self.image_id, thumb or "")
 
 
+class FolderLoaderSignals(QObject):
+    rows_ready = pyqtSignal(list, int)  # (rows, token)
+
+
+class FolderLoaderRunnable(QRunnable):
+    def __init__(self, folder: str, media_exts: set, token: int, signals: FolderLoaderSignals):
+        super().__init__()
+        self._folder = folder
+        self._media_exts = media_exts
+        self._token = token
+        self._signals = signals
+        self.setAutoDelete(True)
+
+    @pyqtSlot()
+    def run(self):
+        paths = []
+        try:
+            with os.scandir(self._folder) as entries:
+                for entry in entries:
+                    if entry.is_file() and os.path.splitext(entry.name)[1].lower() in self._media_exts:
+                        paths.append(entry.path)
+        except OSError:
+            pass
+        sorted_paths = sorted(paths, key=lambda p: os.path.basename(p).lower())
+        rows = db.get_or_create_images_batch(sorted_paths)
+        self._signals.rows_ready.emit(rows, self._token)
+
+
 class GalleryModel(QAbstractListModel):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -282,6 +310,9 @@ class GalleryView(QListView):
         self._loading = False
         self._excluded_rating_tags: list[str] = []
         self._pager: GalleryPager | None = None
+        self._load_token: int = 0
+        self._folder_loader_signals = FolderLoaderSignals()
+        self._folder_loader_signals.rows_ready.connect(self._on_folder_loaded)
         self.setModel(self._gallery_model)
         self.setViewMode(QListView.ViewMode.IconMode)
         self.setResizeMode(QListView.ResizeMode.Adjust)
@@ -362,6 +393,7 @@ class GalleryView(QListView):
         page_rows = self._pager.get_page(page)
         self._apply_size(_compute_thumb_size(len(page_rows)))
         self._gallery_model.set_images(page_rows)
+        self.scrollToTop()
         if page_rows:
             QTimer.singleShot(0, self._on_scroll)
         self.page_changed.emit(
@@ -391,19 +423,18 @@ class GalleryView(QListView):
 
     def load_folder(self, folder: str):
         self._empty_text = "No media in this folder"
+        self._loading = True
+        self._load_token += 1
+        token = self._load_token
         from src.core.thumbnail_cache import VIDEO_EXTENSIONS
         from src.core.image_scanner import SUPPORTED_EXTENSIONS
         media_exts = SUPPORTED_EXTENSIONS | VIDEO_EXTENSIONS
-        paths = []
-        try:
-            with os.scandir(folder) as entries:
-                for entry in entries:
-                    if entry.is_file() and os.path.splitext(entry.name)[1].lower() in media_exts:
-                        paths.append(entry.path)
-        except PermissionError:
-            pass
-        sorted_paths = sorted(paths, key=lambda p: os.path.basename(p).lower())
-        rows = db.get_or_create_images_batch(sorted_paths)
+        worker = FolderLoaderRunnable(folder, media_exts, token, self._folder_loader_signals)
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_folder_loaded(self, rows: list, token: int):
+        if token != self._load_token:
+            return  # stale — user navigated away before this finished
         self._load_rows(self._apply_rating_filter(rows))
 
     def load_images(self, rows, empty_text: str = "No images match this filter") -> int:
@@ -414,16 +445,8 @@ class GalleryView(QListView):
         return len(filtered)
 
     def load_paths(self, paths: list[str]):
-        rows = []
-        for path in paths:
-            if not os.path.isfile(path):
-                continue
-            row = db.get_image_by_path(path)
-            if not row:
-                image_id = db.add_image(path, os.path.basename(path))
-                row = db.get_image(image_id)
-            if row:
-                rows.append(row)
+        valid = [p for p in paths if os.path.isfile(p)]
+        rows = db.get_or_create_images_batch(valid)
         self._load_rows(rows)
 
     def _on_double_click(self, index: QModelIndex):
