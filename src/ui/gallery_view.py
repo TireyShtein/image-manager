@@ -82,17 +82,18 @@ class GalleryPager:
 
 
 class ThumbnailSignals(QObject):
-    loaded = pyqtSignal(int, str)   # (image_id, thumb_path)
-    progress = pyqtSignal(int, int) # (loaded_count, total_count)
+    loaded = pyqtSignal(int, str, int)  # (image_id, thumb_path, token)
+    progress = pyqtSignal(int, int)     # (loaded_count, total_count)
     all_loaded = pyqtSignal()
 
 
 class ThumbnailLoader(QRunnable):
-    def __init__(self, image_id: int, image_path: str, signals: ThumbnailSignals):
+    def __init__(self, image_id: int, image_path: str, signals: ThumbnailSignals, token: int):
         super().__init__()
         self.image_id = image_id
         self.image_path = image_path
         self.signals = signals
+        self._token = token
         self.setAutoDelete(True)
 
     @pyqtSlot()
@@ -102,7 +103,7 @@ class ThumbnailLoader(QRunnable):
         except Exception:
             thumb = None
         # Always emit so the counter increments even on failure
-        self.signals.loaded.emit(self.image_id, thumb or "")
+        self.signals.loaded.emit(self.image_id, thumb or "", self._token)
 
 
 class FolderLoaderSignals(QObject):
@@ -145,6 +146,7 @@ class GalleryModel(QAbstractListModel):
         self._signals.loaded.connect(self._on_thumbnail_loaded)
         self._total: int = 0
         self._loaded: int = 0
+        self._thumb_token: int = 0
         # Track which rows have been queued for thumbnail loading
         self._queued: set[int] = set()
 
@@ -156,6 +158,7 @@ class GalleryModel(QAbstractListModel):
         self._total = len(self._items)
         self._loaded = 0
         self._queued = set()
+        self._thumb_token += 1
         self.endResetModel()
         if self._total == 0:
             self._signals.all_loaded.emit()
@@ -204,7 +207,7 @@ class GalleryModel(QAbstractListModel):
             if item["display_pix"] is not None:
                 continue
             self._queued.add(i)
-            loader = ThumbnailLoader(item["id"], item["path"], self._signals)
+            loader = ThumbnailLoader(item["id"], item["path"], self._signals, self._thumb_token)
             self._pool.start(loader)
 
     def _evict_offscreen(self, first_visible: int, last_visible: int):
@@ -222,7 +225,9 @@ class GalleryModel(QAbstractListModel):
                 item["display_pix"] = None
                 self._queued.discard(i)
 
-    def _on_thumbnail_loaded(self, image_id: int, thumb_path: str):
+    def _on_thumbnail_loaded(self, image_id: int, thumb_path: str, token: int):
+        if token != self._thumb_token:
+            return  # stale result from a previous set_images() batch
         idx = self._id_index.get(image_id)
         if idx is None:
             return
@@ -339,7 +344,12 @@ class GalleryView(QListView):
         self.doubleClicked.connect(self._on_double_click)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._on_context_menu)
-        self._gallery_model._signals.progress.connect(self.thumbnails_loading)
+        self._thumb_progress: tuple[int, int] = (0, 0)
+        self._loading_flush_timer = QTimer(self)
+        self._loading_flush_timer.setSingleShot(True)
+        self._loading_flush_timer.setInterval(50)
+        self._loading_flush_timer.timeout.connect(self._flush_thumb_progress)
+        self._gallery_model._signals.progress.connect(self._on_thumb_progress_raw)
         self._gallery_model._signals.all_loaded.connect(self._on_all_loaded)
         self.selectionModel().selectionChanged.connect(self._on_selection_changed)
 
@@ -383,7 +393,19 @@ class GalleryView(QListView):
         count = self._gallery_model.count()
         self._apply_size(_compute_thumb_size(count))
 
+    def _on_thumb_progress_raw(self, loaded: int, total: int):
+        self._thumb_progress = (loaded, total)
+        if loaded >= total:
+            self._loading_flush_timer.stop()
+            self._flush_thumb_progress()
+        elif not self._loading_flush_timer.isActive():
+            self._loading_flush_timer.start()
+
+    def _flush_thumb_progress(self):
+        self.thumbnails_loading.emit(*self._thumb_progress)
+
     def _load_rows(self, rows):
+        self._loading_flush_timer.stop()
         self.clearSelection()
         self._loading = False
         self._pager = GalleryPager(rows)

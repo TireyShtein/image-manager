@@ -109,6 +109,7 @@ class ImageViewer(QDialog):
 
         layout.addLayout(bar)
         self._view._zoom_callback = self._on_zoom_changed
+        self._update_nav_buttons()
 
     def _load_image(self):
         # Show a loading placeholder while decode runs on a background thread
@@ -146,10 +147,17 @@ class ImageViewer(QDialog):
         self._fit()
         self._set_nav_enabled(True)
 
-    def _set_nav_enabled(self, enabled: bool):
+    def _update_nav_buttons(self):
         has_nav = len(self._all_images) > 1
-        self._btn_prev.setEnabled(enabled and has_nav)
-        self._btn_next.setEnabled(enabled and has_nav)
+        self._btn_prev.setEnabled(has_nav and self._current_index > 0)
+        self._btn_next.setEnabled(has_nav and self._current_index < len(self._all_images) - 1)
+
+    def _set_nav_enabled(self, enabled: bool):
+        if enabled:
+            self._update_nav_buttons()
+        else:
+            self._btn_prev.setEnabled(False)
+            self._btn_next.setEnabled(False)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -168,12 +176,16 @@ class ImageViewer(QDialog):
     def _navigate(self, delta: int):
         if not self._all_images:
             return
-        self._current_index = (self._current_index + delta) % len(self._all_images)
+        new_index = self._current_index + delta
+        if new_index < 0 or new_index >= len(self._all_images):
+            return
+        self._current_index = new_index
         self.image_id, self.image_path = self._all_images[self._current_index]
         self.setWindowTitle(os.path.basename(self.image_path))
         self._path_label.setText(os.path.basename(self.image_path))
         self._path_label.setToolTip(self.image_path)
         self._load_image()
+        self._update_nav_buttons()
 
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key.Key_Left:

@@ -220,10 +220,10 @@ class MainWindow(QMainWindow):
         view_menu.addAction(act_albums)
 
         ai_menu = mb.addMenu("AI")
-        act_wd14 = QAction("Tag with WD14…", self)
-        act_wd14.setShortcut("Ctrl+T")
-        act_wd14.triggered.connect(self._run_wd14_tagging)
-        ai_menu.addAction(act_wd14)
+        self._act_wd14 = QAction("Tag with WD14…", self)
+        self._act_wd14.setShortcut("Ctrl+T")
+        self._act_wd14.triggered.connect(self._run_wd14_tagging)
+        ai_menu.addAction(self._act_wd14)
 
         self._act_cancel_wd14 = QAction("Cancel WD14 Tagging", self)
         self._act_cancel_wd14.setEnabled(False)
@@ -231,9 +231,9 @@ class MainWindow(QMainWindow):
         ai_menu.addAction(self._act_cancel_wd14)
 
         ai_menu.addSeparator()
-        act_sort = QAction("Sort into SFW/NSFW by Tags…", self)
-        act_sort.triggered.connect(self._run_rating_sort)
-        ai_menu.addAction(act_sort)
+        self._act_sort = QAction("Sort into SFW/NSFW by Tags…", self)
+        self._act_sort.triggered.connect(self._run_rating_sort)
+        ai_menu.addAction(self._act_sort)
 
         self._act_cancel_sort = QAction("Cancel Sort", self)
         self._act_cancel_sort.setEnabled(False)
@@ -513,7 +513,7 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction("Delete (Trash)", lambda: self._delete_images(image_ids, trash=True))
         menu.addSeparator()
-        act_perm = QAction("⚠ Delete Permanently", self)
+        act_perm = QAction("Delete Permanently", self)
         act_perm.triggered.connect(lambda: self._delete_images(image_ids, trash=False))
         act_perm.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxWarning))
         menu.addAction(act_perm)
@@ -625,6 +625,7 @@ class MainWindow(QMainWindow):
         self._progress_counter.setText(f"0 / {len(image_ids)}")
         self._status_label.setText(f"Tagging {len(image_ids)} image(s) with WD14…")
         self._act_cancel_wd14.setEnabled(True)
+        self._act_wd14.setEnabled(False)
 
         self._wd14_worker = WD14Worker(image_ids)
         self._wd14_worker.progress.connect(self._on_wd14_progress)
@@ -651,12 +652,14 @@ class MainWindow(QMainWindow):
     def _on_wd14_thread_finished(self):
         """Safety net: hides progress if finished_all never emitted (e.g. worker crash)."""
         self._act_cancel_wd14.setEnabled(False)
+        self._act_wd14.setEnabled(True)
         if self._progress.isVisible():
             self._set_counter_progress_visible(False)
 
     def _on_wd14_finished(self):
         self._set_counter_progress_visible(False)
         self._act_cancel_wd14.setEnabled(False)
+        self._act_wd14.setEnabled(True)
         self._status_label.setText("WD14 tagging complete.")
         self._tag_refresh_timer.start()
 
@@ -704,6 +707,7 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"Sorting {sfw_count + nsfw_count} image(s)…")
 
         self._act_cancel_sort.setEnabled(True)
+        self._act_sort.setEnabled(False)
         self._rating_sort_worker = RatingSortWorker(self._current_folder, sfw_folder, nsfw_folder)
         self._rating_sort_worker.progress.connect(self._on_sort_progress)
         self._rating_sort_worker.image_done.connect(self._on_sort_image_done)
@@ -729,12 +733,14 @@ class MainWindow(QMainWindow):
     def _on_sort_thread_finished(self):
         """Safety net: hides progress if finished_all never emitted (e.g. worker crash)."""
         self._act_cancel_sort.setEnabled(False)
+        self._act_sort.setEnabled(True)
         if self._progress.isVisible():
             self._set_counter_progress_visible(False)
 
     def _on_sort_finished(self, sfw: int, nsfw: int, skipped: int):
         self._set_counter_progress_visible(False)
         self._act_cancel_sort.setEnabled(False)
+        self._act_sort.setEnabled(True)
         self._status_label.setText(
             f"Sort complete: {sfw} → SFW, {nsfw} → NSFW, {skipped} skipped."
         )
