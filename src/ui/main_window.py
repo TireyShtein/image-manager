@@ -449,10 +449,14 @@ class MainWindow(QMainWindow):
             connector = f" {mode} "
             label = (connector.join(tag_names) if len(tag_names) <= 2
                      else f"{tag_names[0]} {mode} +{len(tag_names) - 1} more")
-            shown = self._gallery.load_images(rows, empty_text="No images match the tag filter")
-            missing = len(rows) - shown
-            suffix = f", {missing} missing from disk" if missing else ""
-            self._status_prefix = f"Tag filter: {label} ({shown} images{suffix})"
+            loaded_images = self._gallery.load_images(rows, empty_text="No images match the tag filter")
+            parts = []
+            if loaded_images.sfw_hidden > 0:
+                parts.append(f"{loaded_images.sfw_hidden} hidden by SFW Mode")
+            if loaded_images.missing > 0:
+                parts.append(f"{loaded_images.missing} missing from disk")
+            suffix = f", {', '.join(parts)}" if parts else ""
+            self._status_prefix = f"Tag filter: {label} ({loaded_images.shown} images{suffix})"
             self._status_label.setText(self._status_prefix)
         elif self._current_folder:
             self._status_prefix = f"Folder: {os.path.basename(self._current_folder)}"
@@ -477,10 +481,14 @@ class MainWindow(QMainWindow):
         self._active_tag_filter = []
         rows = db.get_images_in_album(album_id)
         album = db.get_album(album_id)
-        shown = self._gallery.load_images(rows, empty_text=f"No images in album '{album['name']}' found on disk")
-        missing = len(rows) - shown
-        suffix = f", {missing} missing from disk" if missing else ""
-        self._status_prefix = f"Album: {album['name']} ({shown} images{suffix})"
+        loaded_images = self._gallery.load_images(rows, empty_text=f"No images in album '{album['name']}' found on disk")
+        parts = []
+        if loaded_images.sfw_hidden > 0:
+            parts.append(f"{loaded_images.sfw_hidden} hidden by SFW Mode")
+        if loaded_images.missing > 0:
+            parts.append(f"{loaded_images.missing} missing from disk")
+        suffix = f", {', '.join(parts)}" if parts else ""
+        self._status_prefix = f"Album: {album['name']} ({loaded_images.shown} images{suffix})"
         self._status_label.setText(self._status_prefix)
 
     def _on_sfw_toggle(self, checked: bool):

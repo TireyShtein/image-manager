@@ -5,6 +5,7 @@ from PyQt6.QtCore import (Qt, QAbstractListModel, QModelIndex, QSize, QRect,
                            QTimer, QPoint)
 from PyQt6.QtGui import QPixmap, QPainter, QFont, QColor
 from src.core import thumbnail_cache, database as db
+from typing import NamedTuple
 
 # Maximum size stored in the thumbnail cache on disk
 CACHE_THUMB_SIZE = 256
@@ -47,6 +48,10 @@ def _get_placeholder(size: int) -> QPixmap:
         _placeholder_cache[size] = pix
     return _placeholder_cache[size]
 
+class LoadResult(NamedTuple):
+    shown: int
+    sfw_hidden: int        # files on disk, filtered out by SFW Mode
+    missing: int           # files not found on disk at all
 
 class GalleryPager:
     """Holds all rows (lightweight dicts) and serves fixed-size pages."""
@@ -459,12 +464,15 @@ class GalleryView(QListView):
             return  # stale — user navigated away before this finished
         self._load_rows(self._apply_rating_filter(rows))
 
-    def load_images(self, rows, empty_text: str = "No images match this filter") -> int:
+    def load_images(self, rows, empty_text: str = "No images match this filter") -> LoadResult:
         self._empty_text = empty_text
         valid_rows = [r for r in rows if os.path.isfile(r["path"])]
         filtered = self._apply_rating_filter(valid_rows)
+        shown = len(filtered)
+        sfw_hidden = len(valid_rows) - len(filtered)
+        missing = len(rows) - len(valid_rows)
         self._load_rows(filtered)
-        return len(filtered)
+        return LoadResult(shown, sfw_hidden, missing)
 
     def load_paths(self, paths: list[str]):
         valid = [p for p in paths if os.path.isfile(p)]
