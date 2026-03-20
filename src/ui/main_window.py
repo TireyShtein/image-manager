@@ -65,7 +65,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Image Manager")
         self.resize(1280, 800)
         self._current_folder: str | None = None
-        self._active_tag_filter: str = ""
+        self._active_tag_filter: list[str] = []
         self._active_album_id: int | None = None
         self._wd14_worker: WD14Worker | None = None
         self._rating_sort_worker: RatingSortWorker | None = None
@@ -283,7 +283,7 @@ class MainWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Open Folder")
         if folder:
             self._current_folder = folder
-            self._active_tag_filter = ""
+            self._active_tag_filter = []
             self._active_album_id = None
             self._status_prefix = f"Folder: {os.path.basename(folder)}"
             self._status_label.setToolTip(folder)
@@ -301,7 +301,7 @@ class MainWindow(QMainWindow):
         if not parent or parent == self._current_folder:
             return
         self._current_folder = parent
-        self._active_tag_filter = ""
+        self._active_tag_filter = []
         self._active_album_id = None
         self._status_prefix = f"Folder: {os.path.basename(parent)}"
         self._status_label.setToolTip(parent)
@@ -355,7 +355,7 @@ class MainWindow(QMainWindow):
 
     def _on_folder_selected(self, folder: str):
         self._current_folder = folder
-        self._active_tag_filter = ""
+        self._active_tag_filter = []
         self._active_album_id = None
         self._status_prefix = f"Folder: {os.path.basename(folder)}"
         self._status_label.setToolTip(folder)
@@ -375,7 +375,7 @@ class MainWindow(QMainWindow):
         if not os.path.isdir(parent_dir):
             return
         self._current_folder = parent_dir
-        self._active_tag_filter = ""
+        self._active_tag_filter = []
         self._active_album_id = None
         self._status_prefix = f"Folder: {os.path.basename(parent_dir)}"
         self._status_label.setToolTip(parent_dir)
@@ -437,15 +437,16 @@ class MainWindow(QMainWindow):
         count = len(ids)
         self._selected_label.setText(f"{count} selected" if count > 0 else "")
 
-    def _on_tag_filter(self, tag_name: str):
-        self._active_tag_filter = tag_name
+    def _on_tag_filter(self, tag_names: list[str]):
+        self._active_tag_filter = tag_names
         self._active_album_id = None
-        if tag_name:
-            rows = db.get_images_by_tag(tag_name)
-            shown = self._gallery.load_images(rows, empty_text=f"No images with tag '{tag_name}' found on disk")
+        if tag_names:
+            rows = db.get_images_by_tags_and(tag_names)
+            label = ", ".join(tag_names) if len(tag_names) <= 3 else f"{tag_names[0]}, +{len(tag_names) - 1} more"
+            shown = self._gallery.load_images(rows, empty_text="No images match all selected tags")
             missing = len(rows) - shown
             suffix = f", {missing} missing from disk" if missing else ""
-            self._status_prefix = f"Tag filter: {tag_name} ({shown} images{suffix})"
+            self._status_prefix = f"Tag filter: {label} ({shown} images{suffix})"
             self._status_label.setText(self._status_prefix)
         elif self._current_folder:
             self._status_prefix = f"Folder: {os.path.basename(self._current_folder)}"
@@ -467,7 +468,7 @@ class MainWindow(QMainWindow):
 
     def _on_album_selected(self, album_id: int):
         self._active_album_id = album_id
-        self._active_tag_filter = ""
+        self._active_tag_filter = []
         rows = db.get_images_in_album(album_id)
         album = db.get_album(album_id)
         shown = self._gallery.load_images(rows, empty_text=f"No images in album '{album['name']}' found on disk")

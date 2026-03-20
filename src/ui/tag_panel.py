@@ -1,8 +1,9 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
                               QListWidgetItem, QPushButton, QLineEdit, QLabel,
-                              QFrame, QInputDialog, QMessageBox, QCompleter)
+                              QFrame, QInputDialog, QMessageBox, QCompleter,
+                              QAbstractItemView)
 from PyQt6.QtCore import pyqtSignal, Qt, QStringListModel, QTimer
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtGui import QFont, QColor, QBrush
 from src.core import database as db
 
 LIST_STYLE = (
@@ -13,12 +14,12 @@ LIST_STYLE = (
 
 
 class TagPanel(QWidget):
-    tag_filter_changed = pyqtSignal(str)   # tag name or "" to clear filter
+    tag_filter_changed = pyqtSignal(list)   # list[str] of active tag names, [] to clear
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._selected_image_ids: list[int] = []
-        self._active_filter_tag: str = ""
+        self._active_filter_tags: set[str] = set()
         self._setup_ui()
 
     def _setup_ui(self):
@@ -58,6 +59,7 @@ class TagPanel(QWidget):
 
         self._global_list = QListWidget()
         self._global_list.setStyleSheet(LIST_STYLE)
+        self._global_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self._global_list.itemClicked.connect(self._on_tag_clicked)
         layout.addWidget(self._global_list)
 
@@ -107,23 +109,21 @@ class TagPanel(QWidget):
 
     def clear_search(self):
         """Called by MainWindow on folder navigation to reset search state."""
-        self._active_filter_tag = ""
+        self._active_filter_tags.clear()
         self._search_input.blockSignals(True)
         self._search_input.clear()
         self._search_input.blockSignals(False)
-        self._global_list.clearSelection()
         self._btn_clear.setEnabled(False)
         self.refresh()
 
     def _clear_filter(self):
-        self._active_filter_tag = ""
-        self._global_list.clearSelection()
-        self._selected_list.clearSelection()
+        self._active_filter_tags.clear()
+        self._btn_clear.setEnabled(False)
         self._search_input.blockSignals(True)
         self._search_input.clear()
         self._search_input.blockSignals(False)
-        self._btn_clear.setEnabled(False)
-        self.tag_filter_changed.emit("")
+        self.refresh()
+        self.tag_filter_changed.emit([])
 
     def _on_selected_list_item_changed(self, current, previous):
         self._btn_remove.setEnabled(current is not None and bool(self._selected_image_ids))
@@ -140,7 +140,6 @@ class TagPanel(QWidget):
 
     def refresh(self):
         query = self._search_input.text().strip()
-        query_lower = query.lower()
 
         # Global tags list
         self._global_list.clear()
@@ -152,10 +151,11 @@ class TagPanel(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, row["name"])
             item.setToolTip("Click to filter gallery by this tag")
             self._global_list.addItem(item)
-            if row["name"] == self._active_filter_tag:
-                self._global_list.setCurrentItem(item)
+            if row["name"] in self._active_filter_tags:
+                item.setBackground(QColor(80, 130, 255, 55))
+                item.setForeground(QColor(180, 210, 255))
 
-        # Selected image tags list
+        # Selected image tags list — always shows all tags for selected images, unaffected by search
         self._selected_list.clear()
         if self._selected_image_ids:
             n = len(self._selected_image_ids)
@@ -164,8 +164,6 @@ class TagPanel(QWidget):
             tag_rows = db.get_tags_for_images(self._selected_image_ids)
             for row in tag_rows:
                 name, count = row["name"], row["count"]
-                if query_lower and query_lower not in name.lower():
-                    continue
                 label = name if count == n else f"{name} ({count}/{n})"
                 item = QListWidgetItem(label)
                 item.setData(Qt.ItemDataRole.UserRole, name)
@@ -187,9 +185,13 @@ class TagPanel(QWidget):
 
     def _on_tag_clicked(self, item: QListWidgetItem):
         tag_name = item.data(Qt.ItemDataRole.UserRole) or item.text()
-        if tag_name == self._active_filter_tag:
-            self._clear_filter()
-            return
-        self._active_filter_tag = tag_name
-        self._btn_clear.setEnabled(True)
-        self.tag_filter_changed.emit(tag_name)
+        if tag_name in self._active_filter_tags:
+            self._active_filter_tags.discard(tag_name)
+            item.setBackground(QBrush())
+            item.setForeground(QBrush())
+        else:
+            self._active_filter_tags.add(tag_name)
+            item.setBackground(QColor(80, 130, 255, 55))
+            item.setForeground(QColor(180, 210, 255))
+        self._btn_clear.setEnabled(bool(self._active_filter_tags))
+        self.tag_filter_changed.emit(sorted(self._active_filter_tags))
