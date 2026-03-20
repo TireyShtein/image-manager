@@ -87,6 +87,7 @@ class MainWindow(QMainWindow):
         self._build_statusbar()
         if self._sfw_mode:
             self._gallery.set_rating_filter(["rating:explicit", "rating:questionable"])
+            self._tag_panel.set_sfw_mode(True)
 
         # Debounced tag-panel refresh for AI signal handlers
         self._tag_refresh_timer = QTimer(self)
@@ -487,6 +488,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue("sfw_mode", checked)
         excluded = ["rating:explicit", "rating:questionable"] if checked else []
         self._gallery.set_rating_filter(excluded)
+        self._tag_panel.set_sfw_mode(checked)
         self._reload_current_view()
 
     def _reload_current_view(self):

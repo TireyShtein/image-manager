@@ -1,9 +1,9 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
                              QListWidgetItem, QPushButton, QLineEdit, QLabel,
                              QFrame, QInputDialog, QMessageBox, QCompleter,
-                             QAbstractItemView)
+                             QAbstractItemView, QToolTip)
 from PyQt6.QtCore import pyqtSignal, Qt, QStringListModel, QTimer
-from PyQt6.QtGui import QFont, QColor, QBrush
+from PyQt6.QtGui import QFont, QColor, QBrush, QCursor
 from src.core import database as db
 
 LIST_STYLE = (
@@ -27,6 +27,9 @@ _CATEGORY_COLOR = {
 _CATEGORY_LABEL = {"rating": "Rating", "general": "General"}
 
 
+_SFW_BLOCKED_TAGS = {"rating:explicit", "rating:questionable"}
+
+
 def _tag_category(name: str) -> str:
     return "rating" if name.startswith("rating:") else "general"
 
@@ -40,6 +43,7 @@ class TagPanel(QWidget):
         self._active_filter_tags: set[str] = set()
         self._sort_by_count: bool = True   # True=count desc, False=alpha
         self._filter_mode: str = "AND"
+        self._sfw_mode: bool = False
         self._setup_ui()
 
     def _setup_ui(self):
@@ -98,6 +102,7 @@ class TagPanel(QWidget):
         self._global_list.setStyleSheet(LIST_STYLE)
         self._global_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self._global_list.itemChanged.connect(self._on_item_changed)
+        self._global_list.itemClicked.connect(self._on_item_clicked)
         layout.addWidget(self._global_list)
 
         self._btn_clear = QPushButton("Clear filters")
@@ -143,6 +148,26 @@ class TagPanel(QWidget):
         self._btn_remove.setEnabled(False)
         self._btn_remove.clicked.connect(self._remove_tag)
         layout.addWidget(self._btn_remove)
+
+    def set_sfw_mode(self, enabled: bool):
+        """Called by MainWindow when SFW Mode is toggled."""
+        self._sfw_mode = enabled
+        if enabled:
+            removed = self._active_filter_tags & _SFW_BLOCKED_TAGS
+            if removed:
+                self._active_filter_tags -= _SFW_BLOCKED_TAGS
+                self.tag_filter_changed.emit(sorted(self._active_filter_tags), self._filter_mode)
+        self._refresh_global_list()
+
+    def _on_item_clicked(self, item: QListWidgetItem):
+        tag_name = item.data(Qt.ItemDataRole.UserRole)
+        if self._sfw_mode and tag_name in _SFW_BLOCKED_TAGS:
+            QToolTip.showText(
+                QCursor.pos(),
+                "SFW Mode is active — this tag is hidden from the gallery.\n"
+                "Disable SFW Mode in View \u2192 SFW Mode to use this filter.",
+                self._global_list,
+            )
 
     def clear_search(self):
         """Called by MainWindow on folder navigation to reset search state."""
@@ -219,23 +244,33 @@ class TagPanel(QWidget):
                 name, count = row["name"], row["count"]
                 item = QListWidgetItem()
                 item.setData(Qt.ItemDataRole.UserRole, name)
-                item.setToolTip(f"{name}\nClick to toggle filter")
-                item.setFlags(
-                    Qt.ItemFlag.ItemIsEnabled |
-                    Qt.ItemFlag.ItemIsUserCheckable
-                )
-                is_active = name in self._active_filter_tags
-                item.setCheckState(
-                    Qt.CheckState.Checked if is_active else Qt.CheckState.Unchecked
-                )
-                item.setText(f"  {name}  ({count})")
-                if is_active:
-                    item.setForeground(
-                        QColor(255, 220, 130) if cat_key == "rating"
-                        else QColor(200, 230, 255)
+
+                sfw_blocked = self._sfw_mode and name in _SFW_BLOCKED_TAGS
+                if sfw_blocked:
+                    item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                    item.setText(f"  {name}  ({count})  \u00d8")
+                    item.setForeground(QColor(90, 60, 20))
+                    item.setToolTip(
+                        f"{name}\nSFW Mode is active — disable in View \u2192 SFW Mode."
                     )
                 else:
-                    item.setForeground(cat_color)
+                    item.setToolTip(f"{name}\nClick to toggle filter")
+                    item.setFlags(
+                        Qt.ItemFlag.ItemIsEnabled |
+                        Qt.ItemFlag.ItemIsUserCheckable
+                    )
+                    is_active = name in self._active_filter_tags
+                    item.setCheckState(
+                        Qt.CheckState.Checked if is_active else Qt.CheckState.Unchecked
+                    )
+                    item.setText(f"  {name}  ({count})")
+                    if is_active:
+                        item.setForeground(
+                            QColor(255, 220, 130) if cat_key == "rating"
+                            else QColor(200, 230, 255)
+                        )
+                    else:
+                        item.setForeground(cat_color)
                 self._global_list.addItem(item)
 
         self._global_list.blockSignals(False)
