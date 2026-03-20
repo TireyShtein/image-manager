@@ -361,6 +361,25 @@ def get_images_by_tags_and(tag_names: list[str]) -> list:
         ).fetchall()
 
 
+def get_images_by_tags_or(tag_names: list[str]) -> list:
+    """Return images that have ANY of the given tags (OR logic)."""
+    if not tag_names:
+        return []
+    if len(tag_names) == 1:
+        return get_images_by_tag(tag_names[0])
+    placeholders = ",".join("?" * len(tag_names))
+    with get_connection() as conn:
+        return conn.execute(
+            f"SELECT i.* FROM images i "
+            f"JOIN image_tags it ON i.id = it.image_id "
+            f"JOIN tags t ON t.id = it.tag_id "
+            f"WHERE t.name IN ({placeholders}) "
+            f"GROUP BY i.id "
+            f"ORDER BY i.filename",
+            tag_names,
+        ).fetchall()
+
+
 def delete_tag(tag_name: str):
     with get_connection() as conn:
         conn.execute("DELETE FROM tags WHERE name = ?", (tag_name,))

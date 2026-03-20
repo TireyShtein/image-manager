@@ -66,6 +66,7 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)
         self._current_folder: str | None = None
         self._active_tag_filter: list[str] = []
+        self._active_tag_mode: str = "AND"
         self._active_album_id: int | None = None
         self._wd14_worker: WD14Worker | None = None
         self._rating_sort_worker: RatingSortWorker | None = None
@@ -437,13 +438,17 @@ class MainWindow(QMainWindow):
         count = len(ids)
         self._selected_label.setText(f"{count} selected" if count > 0 else "")
 
-    def _on_tag_filter(self, tag_names: list[str]):
+    def _on_tag_filter(self, tag_names: list[str], mode: str):
         self._active_tag_filter = tag_names
+        self._active_tag_mode = mode
         self._active_album_id = None
         if tag_names:
-            rows = db.get_images_by_tags_and(tag_names)
-            label = ", ".join(tag_names) if len(tag_names) <= 3 else f"{tag_names[0]}, +{len(tag_names) - 1} more"
-            shown = self._gallery.load_images(rows, empty_text="No images match all selected tags")
+            rows = (db.get_images_by_tags_and(tag_names)
+                    if mode == "AND" else db.get_images_by_tags_or(tag_names))
+            connector = f" {mode} "
+            label = (connector.join(tag_names) if len(tag_names) <= 2
+                     else f"{tag_names[0]} {mode} +{len(tag_names) - 1} more")
+            shown = self._gallery.load_images(rows, empty_text="No images match the tag filter")
             missing = len(rows) - shown
             suffix = f", {missing} missing from disk" if missing else ""
             self._status_prefix = f"Tag filter: {label} ({shown} images{suffix})"
@@ -488,7 +493,7 @@ class MainWindow(QMainWindow):
         if self._active_album_id is not None:
             self._on_album_selected(self._active_album_id)
         elif self._active_tag_filter:
-            self._on_tag_filter(self._active_tag_filter)
+            self._on_tag_filter(self._active_tag_filter, self._active_tag_mode)
         elif self._current_folder:
             self._gallery.load_folder(self._current_folder)
 

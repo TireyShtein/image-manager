@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
-                              QListWidgetItem, QPushButton, QLineEdit, QLabel,
-                              QFrame, QInputDialog, QMessageBox, QCompleter,
-                              QAbstractItemView)
+                             QListWidgetItem, QPushButton, QLineEdit, QLabel,
+                             QFrame, QInputDialog, QMessageBox, QCompleter,
+                             QAbstractItemView)
 from PyQt6.QtCore import pyqtSignal, Qt, QStringListModel, QTimer
 from PyQt6.QtGui import QFont, QColor, QBrush
 from src.core import database as db
@@ -12,14 +12,34 @@ LIST_STYLE = (
     "QListWidget::item:selected { background: rgba(80, 130, 255, 0.22); color: palette(text); }"
 )
 
+_CTRL_BTN_STYLE = (
+    "QPushButton { color:#ccc; border:1px solid rgba(255,255,255,0.20);"
+    " background:transparent; border-radius:3px; padding:1px 6px; font-size:11px; }"
+    "QPushButton:checked { background:rgba(80,130,255,0.25); color:#fff;"
+    " border-color:rgba(80,130,255,0.6); }"
+    "QPushButton:hover { background:rgba(255,255,255,0.07); }"
+)
+
+_CATEGORY_COLOR = {
+    "rating":  QColor(0xf5, 0xa6, 0x23),   # amber
+    "general": QColor(0xb4, 0xc7, 0xd9),   # muted blue-gray
+}
+_CATEGORY_LABEL = {"rating": "Rating", "general": "General"}
+
+
+def _tag_category(name: str) -> str:
+    return "rating" if name.startswith("rating:") else "general"
+
 
 class TagPanel(QWidget):
-    tag_filter_changed = pyqtSignal(list)   # list[str] of active tag names, [] to clear
+    tag_filter_changed = pyqtSignal(list, str)  # (tag_names, mode) where mode="AND"|"OR"
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._selected_image_ids: list[int] = []
         self._active_filter_tags: set[str] = set()
+        self._sort_by_count: bool = True   # True=count desc, False=alpha
+        self._filter_mode: str = "AND"
         self._setup_ui()
 
     def _setup_ui(self):
@@ -42,28 +62,45 @@ class TagPanel(QWidget):
         _completer.setFilterMode(Qt.MatchFlag.MatchContains)
         self._search_input.setCompleter(_completer)
 
+        # --- AND/OR + sort control row ---
+        ctrl_row = QHBoxLayout()
+        ctrl_row.setSpacing(4)
+
+        self._mode_btn = QPushButton("AND")
+        self._mode_btn.setCheckable(True)
+        self._mode_btn.setFixedHeight(22)
+        self._mode_btn.setStyleSheet(_CTRL_BTN_STYLE)
+        self._mode_btn.setToolTip(
+            "AND: images must have all selected tags\n"
+            "OR: images may have any selected tag"
+        )
+        self._mode_btn.toggled.connect(self._on_mode_toggled)
+        ctrl_row.addWidget(self._mode_btn)
+
+        self._sort_btn = QPushButton("Count ↓")
+        self._sort_btn.setCheckable(True)
+        self._sort_btn.setFixedHeight(22)
+        self._sort_btn.setStyleSheet(_CTRL_BTN_STYLE)
+        self._sort_btn.setToolTip("Toggle sort: by count or alphabetical")
+        self._sort_btn.toggled.connect(self._on_sort_toggled)
+        ctrl_row.addWidget(self._sort_btn)
+
+        layout.addLayout(ctrl_row)
+
         # --- Global tags list ---
-        layout.addSpacing(4)
+        layout.addSpacing(2)
         top_sep = QFrame()
         top_sep.setFrameShape(QFrame.Shape.HLine)
         top_sep.setStyleSheet("color: rgba(255,255,255,0.15);")
         layout.addWidget(top_sep)
-        layout.addSpacing(4)
-        all_tags_label = QLabel("All Tags")
-        font = all_tags_label.font()
-        font.setPointSize(font.pointSize() + 1)
-        font.setWeight(QFont.Weight.DemiBold)
-        all_tags_label.setFont(font)
-        all_tags_label.setStyleSheet("color: #ffffff;")
-        layout.addWidget(all_tags_label)
 
         self._global_list = QListWidget()
         self._global_list.setStyleSheet(LIST_STYLE)
         self._global_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self._global_list.itemClicked.connect(self._on_tag_clicked)
+        self._global_list.itemChanged.connect(self._on_item_changed)
         layout.addWidget(self._global_list)
 
-        self._btn_clear = QPushButton("Clear filter")
+        self._btn_clear = QPushButton("Clear filters")
         self._btn_clear.setObjectName("btn_clear")
         self._btn_clear.setStyleSheet(
             "QPushButton#btn_clear { color: #fff; border: 1px solid rgba(255,255,255,0.30);"
@@ -113,17 +150,16 @@ class TagPanel(QWidget):
         self._search_input.blockSignals(True)
         self._search_input.clear()
         self._search_input.blockSignals(False)
+        self._btn_clear.setText("Clear filters")
         self._btn_clear.setEnabled(False)
         self.refresh()
 
     def _clear_filter(self):
         self._active_filter_tags.clear()
+        self._btn_clear.setText("Clear filters")
         self._btn_clear.setEnabled(False)
-        self._search_input.blockSignals(True)
-        self._search_input.clear()
-        self._search_input.blockSignals(False)
         self.refresh()
-        self.tag_filter_changed.emit([])
+        self.tag_filter_changed.emit([], self._filter_mode)
 
     def _on_selected_list_item_changed(self, current, previous):
         self._btn_remove.setEnabled(current is not None and bool(self._selected_image_ids))
@@ -141,38 +177,123 @@ class TagPanel(QWidget):
     def refresh(self):
         query = self._search_input.text().strip()
 
-        # Global tags list
+        # ── Global tags list ────────────────────────────────────────────
+        self._global_list.blockSignals(True)
         self._global_list.clear()
+
         all_rows = db.get_all_tags_with_counts()
         self._completer_model.setStringList([r["name"] for r in all_rows])
         rows = db.search_tags_with_counts(query) if query else all_rows
-        for row in rows:
-            item = QListWidgetItem(f"{row['name']} ({row['count']})")
-            item.setData(Qt.ItemDataRole.UserRole, row["name"])
-            item.setToolTip("Click to filter gallery by this tag")
-            self._global_list.addItem(item)
-            if row["name"] in self._active_filter_tags:
-                item.setBackground(QColor(80, 130, 255, 55))
-                item.setForeground(QColor(180, 210, 255))
 
-        # Selected image tags list — always shows all tags for selected images, unaffected by search
+        # Sort
+        if self._sort_by_count:
+            rows = sorted(rows, key=lambda r: r["count"], reverse=True)
+        else:
+            rows = sorted(rows, key=lambda r: r["name"].lower())
+
+        # Group by category
+        groups: dict[str, list] = {"rating": [], "general": []}
+        for row in rows:
+            groups[_tag_category(row["name"])].append(row)
+
+        for cat_key in ("rating", "general"):
+            cat_rows = groups[cat_key]
+            if not cat_rows:
+                continue
+
+            # Category header item (visible but not checkable)
+            header = QListWidgetItem(f"  {_CATEGORY_LABEL[cat_key]}  ({len(cat_rows)})")
+            header.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            header.setForeground(QColor(160, 160, 160))
+            f = header.font()
+            f.setWeight(QFont.Weight.DemiBold)
+            f.setPointSize(f.pointSize() - 1)
+            header.setFont(f)
+            header.setBackground(QColor(40, 40, 40))
+            self._global_list.addItem(header)
+
+            cat_color = _CATEGORY_COLOR[cat_key]
+            for row in cat_rows:
+                name, count = row["name"], row["count"]
+                item = QListWidgetItem()
+                item.setData(Qt.ItemDataRole.UserRole, name)
+                item.setToolTip(f"{name}\nClick to toggle filter")
+                item.setFlags(
+                    Qt.ItemFlag.ItemIsEnabled |
+                    Qt.ItemFlag.ItemIsUserCheckable
+                )
+                is_active = name in self._active_filter_tags
+                item.setCheckState(
+                    Qt.CheckState.Checked if is_active else Qt.CheckState.Unchecked
+                )
+                item.setText(f"  {name}  ({count})")
+                if is_active:
+                    item.setForeground(
+                        QColor(255, 220, 130) if cat_key == "rating"
+                        else QColor(200, 230, 255)
+                    )
+                else:
+                    item.setForeground(cat_color)
+                self._global_list.addItem(item)
+
+        self._global_list.blockSignals(False)
+
+        # Update clear button label
+        n = len(self._active_filter_tags)
+        self._btn_clear.setText(f"Clear filters ({n})" if n else "Clear filters")
+        self._btn_clear.setEnabled(bool(n))
+
+        # ── Selected image tags list (unaffected by search) ──────────────
         self._selected_list.clear()
         if self._selected_image_ids:
-            n = len(self._selected_image_ids)
-            suffix = f" — {n} images" if n > 1 else ""
+            n_imgs = len(self._selected_image_ids)
+            suffix = f" — {n_imgs} images" if n_imgs > 1 else ""
             self._selection_label.setText(f"Selected Image Tags{suffix}")
             tag_rows = db.get_tags_for_images(self._selected_image_ids)
             for row in tag_rows:
                 name, count = row["name"], row["count"]
-                label = name if count == n else f"{name} ({count}/{n})"
-                item = QListWidgetItem(label)
-                item.setData(Qt.ItemDataRole.UserRole, name)
-                item.setToolTip(name)
-                if count < n:
-                    item.setForeground(QColor(255, 255, 255, 140))  # ~55% opacity
-                self._selected_list.addItem(item)
+                label = name if count == n_imgs else f"{name} ({count}/{n_imgs})"
+                sel_item = QListWidgetItem(label)
+                sel_item.setData(Qt.ItemDataRole.UserRole, name)
+                sel_item.setToolTip(name)
+                if count < n_imgs:
+                    sel_item.setForeground(QColor(255, 255, 255, 140))
+                self._selected_list.addItem(sel_item)
         else:
             self._selection_label.setText("Selected Image Tags")
+
+    def _on_item_changed(self, item: QListWidgetItem):
+        if not (item.flags() & Qt.ItemFlag.ItemIsUserCheckable):
+            return  # ignore header items
+        tag_name = item.data(Qt.ItemDataRole.UserRole)
+        if not tag_name:
+            return
+        cat = _tag_category(tag_name)
+        if item.checkState() == Qt.CheckState.Checked:
+            self._active_filter_tags.add(tag_name)
+            new_color = QColor(255, 220, 130) if cat == "rating" else QColor(200, 230, 255)
+        else:
+            self._active_filter_tags.discard(tag_name)
+            new_color = _CATEGORY_COLOR[cat]
+        # Block signals when updating foreground to avoid re-entrant itemChanged
+        self._global_list.blockSignals(True)
+        item.setForeground(new_color)
+        self._global_list.blockSignals(False)
+        n = len(self._active_filter_tags)
+        self._btn_clear.setText(f"Clear filters ({n})" if n else "Clear filters")
+        self._btn_clear.setEnabled(bool(n))
+        self.tag_filter_changed.emit(sorted(self._active_filter_tags), self._filter_mode)
+
+    def _on_mode_toggled(self, checked: bool):
+        self._filter_mode = "OR" if checked else "AND"
+        self._mode_btn.setText("OR" if checked else "AND")
+        if self._active_filter_tags:
+            self.tag_filter_changed.emit(sorted(self._active_filter_tags), self._filter_mode)
+
+    def _on_sort_toggled(self, checked: bool):
+        self._sort_by_count = not checked
+        self._sort_btn.setText("A-Z" if checked else "Count ↓")
+        self.refresh()
 
     def _remove_tag(self):
         item = self._selected_list.currentItem()
@@ -182,16 +303,3 @@ class TagPanel(QWidget):
         for image_id in self._selected_image_ids:
             db.remove_tag_from_image(image_id, tag_name)
         self.refresh()
-
-    def _on_tag_clicked(self, item: QListWidgetItem):
-        tag_name = item.data(Qt.ItemDataRole.UserRole) or item.text()
-        if tag_name in self._active_filter_tags:
-            self._active_filter_tags.discard(tag_name)
-            item.setBackground(QBrush())
-            item.setForeground(QBrush())
-        else:
-            self._active_filter_tags.add(tag_name)
-            item.setBackground(QColor(80, 130, 255, 55))
-            item.setForeground(QColor(180, 210, 255))
-        self._btn_clear.setEnabled(bool(self._active_filter_tags))
-        self.tag_filter_changed.emit(sorted(self._active_filter_tags))
