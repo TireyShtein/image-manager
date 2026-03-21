@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
                              QListWidgetItem, QPushButton, QLineEdit, QLabel,
                              QFrame, QInputDialog, QMessageBox, QCompleter,
-                             QAbstractItemView, QToolTip)
+                             QAbstractItemView, QToolTip, QMenu)
 from PyQt6.QtCore import pyqtSignal, Qt, QStringListModel, QTimer
 from PyQt6.QtGui import QFont, QColor, QBrush, QCursor
 from src.core import database as db
@@ -103,6 +103,8 @@ class TagPanel(QWidget):
         self._global_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self._global_list.itemChanged.connect(self._on_item_changed)
         self._global_list.itemClicked.connect(self._on_item_clicked)
+        self._global_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._global_list.customContextMenuRequested.connect(self._on_global_list_context_menu)
         layout.addWidget(self._global_list)
 
         self._btn_clear = QPushButton("Clear filters")
@@ -345,6 +347,60 @@ class TagPanel(QWidget):
         self._sort_by_count = not checked
         self._sort_btn.setText("A-Z" if checked else "Count ↓")
         self._refresh_global_list()
+
+    def _on_global_list_context_menu(self, pos):
+        item = self._global_list.itemAt(pos)
+        if item is None:
+            return
+        tag_name = item.data(Qt.ItemDataRole.UserRole)
+        if not tag_name:
+            return  # header item
+        menu = QMenu(self)
+        act_rename = menu.addAction("Rename tag globally…")
+        act_delete = menu.addAction("Delete tag globally…")
+        chosen = menu.exec(self._global_list.viewport().mapToGlobal(pos))
+        if chosen == act_rename:
+            self._rename_global_tag(tag_name)
+        elif chosen == act_delete:
+            self._delete_global_tag(tag_name)
+
+    def _rename_global_tag(self, tag_name: str):
+        new_name, ok = QInputDialog.getText(
+            self, "Rename Tag", f"Rename  '{tag_name}'  to:", text=tag_name
+        )
+        if not ok:
+            return
+        new_name = new_name.strip()
+        if not new_name or new_name == tag_name:
+            return
+        try:
+            db.rename_tag(tag_name, new_name)
+        except Exception as e:
+            QMessageBox.warning(self, "Rename Failed",
+                                f"Could not rename tag:\n{e}")
+            return
+        # Update active filter set if this tag was selected
+        if tag_name in self._active_filter_tags:
+            self._active_filter_tags.discard(tag_name)
+            self._active_filter_tags.add(new_name)
+        self.refresh()
+        self.tag_filter_changed.emit(sorted(self._active_filter_tags), self._filter_mode)
+
+    def _delete_global_tag(self, tag_name: str):
+        count = next(
+            (r["count"] for r in db.get_all_tags_with_counts() if r["name"] == tag_name), 0
+        )
+        reply = QMessageBox.question(
+            self, "Delete Tag",
+            f"Delete  '{tag_name}'  from all {count} image(s)?\nThis cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        db.delete_tag(tag_name)
+        self._active_filter_tags.discard(tag_name)
+        self.refresh()
+        self.tag_filter_changed.emit(sorted(self._active_filter_tags), self._filter_mode)
 
     def _remove_tag(self):
         item = self._selected_list.currentItem()

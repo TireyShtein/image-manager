@@ -380,6 +380,12 @@ def get_images_by_tags_or(tag_names: list[str]) -> list:
         ).fetchall()
 
 
+def rename_tag(old_name: str, new_name: str):
+    """Rename a tag globally. Raises sqlite3.IntegrityError if new_name already exists."""
+    with get_connection() as conn:
+        conn.execute("UPDATE tags SET name = ? WHERE name = ?", (new_name, old_name))
+
+
 def delete_tag(tag_name: str):
     with get_connection() as conn:
         conn.execute("DELETE FROM tags WHERE name = ?", (tag_name,))
