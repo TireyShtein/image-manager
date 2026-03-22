@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (QMainWindow, QPushButton, QWidget, QHBoxLayout, QVB
                               QFileDialog, QMessageBox, QInputDialog, QMenu,
                               QApplication, QDialog, QStyle)
 from PyQt6.QtCore import Qt, QThread, QSettings, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QActionGroup
 from src.ui.folder_tree import FolderTree
 from src.ui.gallery_view import GalleryView
 from src.ui.image_viewer import ImageViewer, VIDEO_EXTENSIONS
@@ -103,6 +103,7 @@ class MainWindow(QMainWindow):
         self._tag_refresh_timer.setInterval(500)
         self._tag_refresh_timer.timeout.connect(self._tag_panel.refresh)
 
+        self._gallery.set_density(self._settings.value("density", "comfortable"))
         self._restore_last_folder()
         self._tag_panel.refresh()
 
@@ -253,6 +254,25 @@ class MainWindow(QMainWindow):
         self._act_sfw.setChecked(self._sfw_mode)
         self._act_sfw.triggered.connect(self._on_sfw_toggle)
         view_menu.addAction(self._act_sfw)
+        view_menu.addSeparator()
+
+        density_group = QActionGroup(self)
+        density_group.setExclusive(True)
+        saved_density = self._settings.value("density", "comfortable")
+        density_menu = view_menu.addMenu("Density")
+        for label, key in [("Compact", "compact"), ("Comfortable", "comfortable"), ("Spacious", "spacious")]:
+            act = QAction(label, self)
+            act.setCheckable(True)
+            act.setData(key)
+            act.setChecked(key == saved_density)
+            density_group.addAction(act)
+            density_menu.addAction(act)
+        density_group.triggered.connect(
+            lambda a: (
+                self._gallery.set_density(a.data()),
+                self._settings.setValue("density", a.data()),
+            )
+        )
         view_menu.addSeparator()
 
         self._act_show_tree = QAction("Show Folder Tree", self)

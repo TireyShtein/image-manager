@@ -26,6 +26,18 @@ _SIZE_TIERS = [
 ]
 _MIN_THUMB_SIZE = 70
 
+
+class _DensityConfig(NamedTuple):
+    factor: float
+    spacing: int
+
+
+_DENSITY_CONFIG: dict[str, _DensityConfig] = {
+    "compact":     _DensityConfig(factor=0.65, spacing=4),
+    "comfortable": _DensityConfig(factor=1.0,  spacing=8),
+    "spacious":    _DensityConfig(factor=1.40, spacing=12),
+}
+
 # Pagination
 PAGE_SIZE = 200
 
@@ -363,6 +375,7 @@ class GalleryView(QListView):
         self._empty_text = "No media in this folder"
         self._empty_hint: str | None = None  # override for secondary hint text
         self._loading = False
+        self._density: str = "comfortable"
         self._excluded_rating_tags: list[str] = []
         self._pager: GalleryPager | None = None
         self._load_token: int = 0
@@ -463,7 +476,11 @@ class GalleryView(QListView):
 
     def _show_page(self, page: int):
         page_rows = self._pager.get_page(page)
-        self._apply_size(_compute_thumb_size(len(page_rows)))
+        cfg = _DENSITY_CONFIG[self._density]
+        raw = _compute_thumb_size(len(page_rows))
+        px = max(60, min(400, round(raw * cfg.factor / 2) * 2))
+        self.setSpacing(cfg.spacing)
+        self._apply_size(px)
         self._gallery_model.set_images(page_rows)
         self.scrollToTop()
         if page_rows:
@@ -481,6 +498,13 @@ class GalleryView(QListView):
     def prev_page(self):
         if self._pager and self._pager.current_page > 0:
             self._show_page(self._pager.current_page - 1)
+
+    def set_density(self, mode: str):
+        if mode == self._density:
+            return
+        self._density = mode
+        if self._pager is not None and self._pager.total > 0:
+            self._show_page(self._pager.current_page)
 
     def set_show_folder_origin(self, show: bool):
         """Show 'folder/filename' labels instead of just filenames."""
