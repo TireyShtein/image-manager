@@ -114,14 +114,14 @@ class MainWindow(QMainWindow):
         root_layout = QHBoxLayout(central)
         root_layout.setContentsMargins(0, 0, 0, 0)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        root_layout.addWidget(splitter)
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        root_layout.addWidget(self._splitter)
 
         # Left: go-up button + folder tree
-        left = QWidget()
-        left.setMinimumWidth(180)
-        left.setMaximumWidth(300)
-        left_layout = QVBoxLayout(left)
+        self._left_panel = QWidget()
+        self._left_panel.setMinimumWidth(180)
+        self._left_panel.setMaximumWidth(450)
+        left_layout = QVBoxLayout(self._left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(0)
 
@@ -135,7 +135,7 @@ class MainWindow(QMainWindow):
         self._folder_tree.folder_selected.connect(self._on_folder_selected)
         self._folder_tree.files_selected.connect(self._on_tree_files_selected)
         left_layout.addWidget(self._folder_tree)
-        splitter.addWidget(left)
+        self._splitter.addWidget(self._left_panel)
 
         # Centre: filter chip bar + gallery + pagination bar
         gallery_container = QWidget()
@@ -187,13 +187,13 @@ class MainWindow(QMainWindow):
         self._page_bar.setVisible(False)
         gallery_layout.addWidget(self._page_bar)
 
-        splitter.addWidget(gallery_container)
+        self._splitter.addWidget(gallery_container)
 
         # Right: tag panel only (album panel moved to floating dialog)
-        right = QWidget()
-        right.setMinimumWidth(180)
-        right.setMaximumWidth(280)
-        right_layout = QVBoxLayout(right)
+        self._right_panel = QWidget()
+        self._right_panel.setMinimumWidth(180)
+        self._right_panel.setMaximumWidth(400)
+        right_layout = QVBoxLayout(self._right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
 
@@ -201,8 +201,23 @@ class MainWindow(QMainWindow):
         self._tag_panel.tag_filter_changed.connect(self._on_tag_filter)
         right_layout.addWidget(self._tag_panel)
 
-        splitter.addWidget(right)
-        splitter.setStretchFactor(1, 1)
+        self._splitter.addWidget(self._right_panel)
+        self._splitter.setStretchFactor(1, 1)
+
+        # Collapsible: left and right only; center gallery is never collapsible
+        self._splitter.setCollapsible(0, True)
+        self._splitter.setCollapsible(1, False)
+        self._splitter.setCollapsible(2, True)
+
+        # Restore splitter state from previous session
+        saved = self._settings.value("splitter_state")
+        if saved is None or not self._splitter.restoreState(saved):
+            self._splitter.setSizes([220, 9999, 240])
+
+        left_vis = self._settings.value("left_panel_visible", True, type=bool)
+        right_vis = self._settings.value("right_panel_visible", True, type=bool)
+        self._left_panel.setVisible(left_vis)
+        self._right_panel.setVisible(right_vis)
 
         # Album panel: instantiated but shown on demand as a floating dialog
         self._album_panel = AlbumPanel()
@@ -239,9 +254,27 @@ class MainWindow(QMainWindow):
         self._act_sfw.triggered.connect(self._on_sfw_toggle)
         view_menu.addAction(self._act_sfw)
         view_menu.addSeparator()
+
+        self._act_show_tree = QAction("Show Folder Tree", self)
+        self._act_show_tree.setShortcut("Ctrl+1")
+        self._act_show_tree.setCheckable(True)
+        self._act_show_tree.setChecked(self._left_panel.isVisible())
+        self._act_show_tree.toggled.connect(self._toggle_left_panel)
+        view_menu.addAction(self._act_show_tree)
+
+        self._act_show_tags = QAction("Show Tag Panel", self)
+        self._act_show_tags.setShortcut("Ctrl+2")
+        self._act_show_tags.setCheckable(True)
+        self._act_show_tags.setChecked(self._right_panel.isVisible())
+        self._act_show_tags.toggled.connect(self._toggle_right_panel)
+        view_menu.addAction(self._act_show_tags)
+        view_menu.addSeparator()
+
         act_albums = QAction("Albums…", self)
         act_albums.triggered.connect(self._show_album_dialog)
         view_menu.addAction(act_albums)
+
+        self._splitter.splitterMoved.connect(self._on_splitter_moved)
 
         ai_menu = mb.addMenu("AI")
         self._act_wd14 = QAction("Tag with WD14…", self)
@@ -292,6 +325,35 @@ class MainWindow(QMainWindow):
 
     def _remove_filter_chip(self, tag_name: str):
         self._tag_panel.remove_filter_tag(tag_name)
+
+    def _toggle_left_panel(self, visible: bool):
+        self._left_panel.setVisible(visible)
+        if visible and self._splitter.sizes()[0] == 0:
+            sizes = self._splitter.sizes()
+            sizes[0] = 220
+            sizes[1] = max(sizes[1] - 220, 200)
+            self._splitter.setSizes(sizes)
+
+    def _toggle_right_panel(self, visible: bool):
+        self._right_panel.setVisible(visible)
+        if visible and self._splitter.sizes()[2] == 0:
+            sizes = self._splitter.sizes()
+            sizes[2] = 240
+            sizes[1] = max(sizes[1] - 240, 200)
+            self._splitter.setSizes(sizes)
+
+    def _on_splitter_moved(self, pos: int, index: int):
+        sizes = self._splitter.sizes()
+        left_vis = sizes[0] > 0
+        right_vis = sizes[2] > 0
+        self._left_panel.setVisible(left_vis)
+        self._right_panel.setVisible(right_vis)
+        self._act_show_tree.blockSignals(True)
+        self._act_show_tree.setChecked(left_vis)
+        self._act_show_tree.blockSignals(False)
+        self._act_show_tags.blockSignals(True)
+        self._act_show_tags.setChecked(right_vis)
+        self._act_show_tags.blockSignals(False)
 
     def _set_counter_progress_visible(self, visible: bool):
         self._progress_counter.setVisible(visible)
@@ -566,6 +628,9 @@ class MainWindow(QMainWindow):
         self._album_dialog.activateWindow()
 
     def closeEvent(self, event):
+        self._settings.setValue("splitter_state", self._splitter.saveState())
+        self._settings.setValue("left_panel_visible", self._left_panel.isVisible())
+        self._settings.setValue("right_panel_visible", self._right_panel.isVisible())
         if self._album_dialog is not None:
             self._settings.setValue("album_dialog_geometry", self._album_dialog.saveGeometry())
         super().closeEvent(event)
