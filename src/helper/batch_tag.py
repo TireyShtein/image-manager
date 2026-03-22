@@ -71,7 +71,7 @@ def main():
           f"files {start_idx + 1}-{actual_end}  ({len(batch_paths)} files)")
 
     # Register images in DB and get IDs
-    rows = db.get_or_create_images_batch(batch_paths)
+    rows, _recovered = db.get_or_create_images_batch(batch_paths)
     image_ids = [r["id"] for r in rows]
     print(f"[INFO] Image IDs ready   : {len(image_ids)}")
 

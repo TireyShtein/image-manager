@@ -112,7 +112,7 @@ class ThumbnailLoader(QRunnable):
 
 
 class FolderLoaderSignals(QObject):
-    rows_ready = pyqtSignal(list, int)  # (rows, token)
+    rows_ready = pyqtSignal(list, int, int)  # (rows, token, recovered_count)
 
 
 class FolderLoaderRunnable(QRunnable):
@@ -135,8 +135,8 @@ class FolderLoaderRunnable(QRunnable):
         except OSError:
             pass
         sorted_paths = sorted(paths, key=lambda p: os.path.basename(p).lower())
-        rows = db.get_or_create_images_batch(sorted_paths)
-        self._signals.rows_ready.emit(rows, self._token)
+        rows, recovered = db.get_or_create_images_batch(sorted_paths)
+        self._signals.rows_ready.emit(rows, self._token, recovered)
 
 
 class GalleryModel(QAbstractListModel):
@@ -312,6 +312,7 @@ class GalleryView(QListView):
     thumbnails_loading = pyqtSignal(int, int)  # (loaded, total)
     thumbnails_ready = pyqtSignal(int)          # total count
     page_changed = pyqtSignal(int, int, int)    # (page, page_count, total)
+    tags_recovered = pyqtSignal(int)            # recovered_count (> 0 only)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -461,10 +462,12 @@ class GalleryView(QListView):
         worker = FolderLoaderRunnable(folder, media_exts, token, self._folder_loader_signals)
         QThreadPool.globalInstance().start(worker)
 
-    def _on_folder_loaded(self, rows: list, token: int):
+    def _on_folder_loaded(self, rows: list, token: int, recovered: int = 0):
         if token != self._load_token:
             return  # stale — user navigated away before this finished
         self._load_rows(self._apply_rating_filter(rows))
+        if recovered > 0:
+            self.tags_recovered.emit(recovered)
 
     def load_images(self, rows, empty_text: str = "No images match this filter",
                     empty_hint: str | None = None) -> LoadResult:
@@ -480,7 +483,7 @@ class GalleryView(QListView):
 
     def load_paths(self, paths: list[str]):
         valid = [p for p in paths if os.path.isfile(p)]
-        rows = db.get_or_create_images_batch(valid)
+        rows, _recovered = db.get_or_create_images_batch(valid)
         self._load_rows(rows)
 
     def _on_double_click(self, index: QModelIndex):

@@ -163,6 +163,7 @@ class MainWindow(QMainWindow):
         self._gallery.thumbnails_ready.connect(self._on_thumbnails_ready)
         self._gallery.empty_context_menu_requested.connect(self._on_empty_gallery_context_menu)
         self._gallery.page_changed.connect(self._on_page_changed)
+        self._gallery.tags_recovered.connect(self._on_tags_recovered)
         gallery_layout.addWidget(self._gallery, 1)
 
         # Pagination bar
@@ -483,6 +484,13 @@ class MainWindow(QMainWindow):
             self._page_label.setText(f"Page {page + 1} of {page_count}  ({total} total)")
             self._btn_prev_page.setEnabled(page > 0)
             self._btn_next_page.setEnabled(page < page_count - 1)
+
+    def _on_tags_recovered(self, count: int):
+        if count > 0:
+            label = "image" if count == 1 else "images"
+            current = self._status_label.text()
+            self._status_label.setText(f"{current} | Recovered tags for {count} moved {label}")
+            self._tag_panel.refresh()
 
     def _make_image_nav_list(self) -> list[tuple[int, str]]:
         return [(iid, p) for iid, p in self._gallery.get_all_items()
