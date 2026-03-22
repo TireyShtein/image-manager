@@ -152,6 +152,7 @@ class GalleryModel(QAbstractListModel):
         self._total: int = 0
         self._loaded: int = 0
         self._thumb_token: int = 0
+        self._show_folder_origin: bool = False
         # Track which rows have been queued for thumbnail loading
         self._queued: set[int] = set()
         self._error_ids: set[int] = set()
@@ -266,6 +267,9 @@ class GalleryModel(QAbstractListModel):
         if role == Qt.ItemDataRole.DisplayRole:
             if self._display_size < 140:
                 return None
+            if self._show_folder_origin:
+                folder = os.path.basename(os.path.dirname(item["path"]))
+                return f"{folder}/{os.path.basename(item['path'])}"
             return os.path.basename(item["path"])
         if role == Qt.ItemDataRole.ToolTipRole:
             tip = item["path"]
@@ -330,6 +334,14 @@ class GalleryModel(QAbstractListModel):
         painter.drawText(result.width() - 18, 2, 16, 16, Qt.AlignmentFlag.AlignCenter, "!")
         painter.end()
         return result
+
+    def set_show_folder_origin(self, show: bool):
+        if show == self._show_folder_origin:
+            return
+        self._show_folder_origin = show
+        if self._items:
+            self.dataChanged.emit(self.index(0), self.index(len(self._items) - 1),
+                                  [Qt.ItemDataRole.DisplayRole])
 
     def count(self) -> int:
         return len(self._items)
@@ -470,6 +482,10 @@ class GalleryView(QListView):
         if self._pager and self._pager.current_page > 0:
             self._show_page(self._pager.current_page - 1)
 
+    def set_show_folder_origin(self, show: bool):
+        """Show 'folder/filename' labels instead of just filenames."""
+        self._gallery_model.set_show_folder_origin(show)
+
     def set_rating_filter(self, excluded: list[str]):
         """Set which rating tags to hide. Pass [] to show everything."""
         self._excluded_rating_tags = excluded
@@ -485,6 +501,7 @@ class GalleryView(QListView):
         self._empty_text = "No media in this folder"
         self._empty_hint = None
         self._loading = True
+        self._gallery_model.set_show_folder_origin(False)
         self._load_token += 1
         token = self._load_token
         from src.core.thumbnail_cache import VIDEO_EXTENSIONS
@@ -501,9 +518,11 @@ class GalleryView(QListView):
             self.tags_recovered.emit(recovered)
 
     def load_images(self, rows, empty_text: str = "No images match this filter",
-                    empty_hint: str | None = None) -> LoadResult:
+                    empty_hint: str | None = None,
+                    show_folder_origin: bool = False) -> LoadResult:
         self._empty_text = empty_text
         self._empty_hint = empty_hint
+        self._gallery_model.set_show_folder_origin(show_folder_origin)
         valid_rows = [r for r in rows if os.path.isfile(r["path"])]
         filtered = self._apply_rating_filter(valid_rows)
         shown = len(filtered)
@@ -513,6 +532,7 @@ class GalleryView(QListView):
         return LoadResult(shown, sfw_hidden, missing)
 
     def load_paths(self, paths: list[str]):
+        self._gallery_model.set_show_folder_origin(False)
         valid = [p for p in paths if os.path.isfile(p)]
         rows, _recovered = db.get_or_create_images_batch(valid)
         self._load_rows(rows)

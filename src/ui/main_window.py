@@ -526,6 +526,7 @@ class MainWindow(QMainWindow):
                 rows,
                 empty_text="No images match the tag filter",
                 empty_hint="Try switching to OR mode in the tag panel, or clear the filter",
+                show_folder_origin=True,
             )
             parts = []
             if loaded_images.sfw_hidden > 0:
@@ -552,9 +553,22 @@ class MainWindow(QMainWindow):
             dlg_layout = QVBoxLayout(self._album_dialog)
             dlg_layout.setContentsMargins(0, 0, 0, 0)
             dlg_layout.addWidget(self._album_panel)
+            geom = self._settings.value("album_dialog_geometry")
+            if geom:
+                self._album_dialog.restoreGeometry(geom)
+            self._album_dialog.rejected.connect(
+                lambda: self._settings.setValue(
+                    "album_dialog_geometry", self._album_dialog.saveGeometry()
+                )
+            )
         self._album_dialog.show()
         self._album_dialog.raise_()
         self._album_dialog.activateWindow()
+
+    def closeEvent(self, event):
+        if self._album_dialog is not None:
+            self._settings.setValue("album_dialog_geometry", self._album_dialog.saveGeometry())
+        super().closeEvent(event)
 
     def _on_album_selected(self, album_id: int):
         self._active_album_id = album_id
@@ -643,11 +657,28 @@ class MainWindow(QMainWindow):
         dest = QFileDialog.getExistingDirectory(self, "Move to Folder")
         if not dest:
             return
+        n = len(image_ids)
+        reply = QMessageBox.warning(
+            self, "Confirm Move",
+            f"Move {n} image{'s' if n != 1 else ''} to:\n{dest}?\n\nThis cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
         self._start_file_op("move", image_ids, dest)
 
     def _copy_images(self, image_ids: list[int]):
         dest = QFileDialog.getExistingDirectory(self, "Copy to Folder")
         if not dest:
+            return
+        n = len(image_ids)
+        reply = QMessageBox.question(
+            self, "Confirm Copy",
+            f"Copy {n} image{'s' if n != 1 else ''} to:\n{dest}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
             return
         self._start_file_op("copy", image_ids, dest)
 
