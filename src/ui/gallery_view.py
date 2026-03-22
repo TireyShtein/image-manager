@@ -1,8 +1,8 @@
 import os
-from PyQt6.QtWidgets import QListView, QAbstractItemView, QStyle
+from PyQt6.QtWidgets import QListView, QAbstractItemView, QStyle, QFrame, QLabel, QVBoxLayout, QApplication
 from PyQt6.QtCore import (Qt, QAbstractListModel, QModelIndex, QSize, QRect,
                            QRunnable, QThreadPool, pyqtSignal, QObject, pyqtSlot,
-                           QTimer, QPoint)
+                           QTimer, QPoint, QEvent)
 from PyQt6.QtGui import QPixmap, QPainter, QFont, QColor, QPen
 from src.core import thumbnail_cache, database as db
 from typing import NamedTuple
@@ -297,6 +297,11 @@ class GalleryModel(QAbstractListModel):
             return self._items[row]["id"]
         return None
 
+    def get_item(self, row: int) -> dict | None:
+        if 0 <= row < len(self._items):
+            return self._items[row]
+        return None
+
     def remove_image(self, image_id: int):
         idx = self._id_index.get(image_id)
         if idx is None:
@@ -419,6 +424,110 @@ class GalleryView(QListView):
         # Viewport-driven lazy loading: connect scroll to _on_scroll
         self.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
+        # Hover metadata card
+        self._hover_card = QFrame(None, Qt.WindowType.ToolTip)
+        self._hover_card.setStyleSheet(
+            "QFrame { background: #1e1e2e; border: 1px solid rgba(255,255,255,0.15);"
+            " border-radius: 6px; }"
+            "QLabel { color: #e0e0f0; background: transparent; border: none; }"
+        )
+        _card_layout = QVBoxLayout(self._hover_card)
+        _card_layout.setContentsMargins(8, 6, 8, 6)
+        _card_layout.setSpacing(3)
+        self._hover_name_label = QLabel()
+        self._hover_name_label.setStyleSheet("font-weight: bold; font-size: 12px;")
+        self._hover_size_label = QLabel()
+        self._hover_size_label.setStyleSheet("color: #888; font-size: 11px;")
+        self._hover_tags_label = QLabel()
+        self._hover_tags_label.setWordWrap(True)
+        self._hover_tags_label.setMaximumWidth(280)
+        self._hover_tags_label.setStyleSheet("font-size: 11px;")
+        _card_layout.addWidget(self._hover_name_label)
+        _card_layout.addWidget(self._hover_size_label)
+        _card_layout.addWidget(self._hover_tags_label)
+        self._hover_card.hide()
+
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setSingleShot(True)
+        self._hover_timer.setInterval(500)
+        self._hover_timer.timeout.connect(self._show_hover_card)
+        self._hover_row: int = -1
+        self._hover_global_pos = QPoint()
+
+        self.viewport().setMouseTracking(True)
+        self.viewport().installEventFilter(self)
+        self.verticalScrollBar().valueChanged.connect(self._hide_hover_card)
+
+    def eventFilter(self, obj, event):
+        if obj is self.viewport():
+            t = event.type()
+            if t == QEvent.Type.MouseMove:
+                self._on_hover_move(event.pos(), event.globalPosition().toPoint())
+            elif t == QEvent.Type.Leave:
+                self._hide_hover_card()
+            elif t == QEvent.Type.ToolTip:
+                return True  # suppress native tooltip while hover card is active
+        return super().eventFilter(obj, event)
+
+    def _on_hover_move(self, local_pos: QPoint, global_pos: QPoint):
+        self._hover_global_pos = global_pos
+        index = self.indexAt(local_pos)
+        if not index.isValid():
+            self._hide_hover_card()
+            return
+        if index.row() == self._hover_row:
+            if self._hover_card.isVisible():
+                self._position_hover_card()
+            return
+        self._hover_row = index.row()
+        self._hover_card.hide()
+        self._hover_timer.start()
+
+    def _show_hover_card(self):
+        item = self._gallery_model.get_item(self._hover_row)
+        if item is None:
+            return
+        path = item["path"]
+        self._hover_name_label.setText(os.path.basename(path))
+        try:
+            size_bytes = os.path.getsize(path)
+            if size_bytes >= 1_048_576:
+                size_str = f"{size_bytes / 1_048_576:.1f} MB"
+            elif size_bytes >= 1024:
+                size_str = f"{size_bytes / 1024:.0f} KB"
+            else:
+                size_str = f"{size_bytes} B"
+        except OSError:
+            size_str = "—"
+        self._hover_size_label.setText(size_str)
+        tag_rows = db.get_tags_for_images([item["id"]])
+        if tag_rows:
+            self._hover_tags_label.setText("  ·  ".join(r[0] for r in tag_rows))
+            self._hover_tags_label.show()
+        else:
+            self._hover_tags_label.hide()
+        self._hover_card.adjustSize()
+        self._position_hover_card()
+        self._hover_card.show()
+
+    def _position_hover_card(self):
+        gp = self._hover_global_pos
+        screen = QApplication.screenAt(gp) or QApplication.primaryScreen()
+        sg = screen.availableGeometry()
+        w, h = self._hover_card.width(), self._hover_card.height()
+        x = gp.x() + 16
+        y = gp.y() + 16
+        if x + w > sg.right():
+            x = gp.x() - w - 8
+        if y + h > sg.bottom():
+            y = gp.y() - h - 8
+        self._hover_card.move(x, y)
+
+    def _hide_hover_card(self, *_args):
+        self._hover_timer.stop()
+        self._hover_row = -1
+        self._hover_card.hide()
+
     def _on_scroll(self, *_args):
         """Compute visible row range and request/evict thumbnails accordingly."""
         vp = self.viewport()
@@ -468,6 +577,7 @@ class GalleryView(QListView):
         self.thumbnails_loading.emit(*self._thumb_progress)
 
     def _load_rows(self, rows):
+        self._hide_hover_card()
         self._loading_flush_timer.stop()
         self.clearSelection()
         self._loading = False
@@ -475,6 +585,7 @@ class GalleryView(QListView):
         self._show_page(0)
 
     def _show_page(self, page: int):
+        self._hide_hover_card()
         page_rows = self._pager.get_page(page)
         cfg = _DENSITY_CONFIG[self._density]
         raw = _compute_thumb_size(len(page_rows))
@@ -562,6 +673,7 @@ class GalleryView(QListView):
         self._load_rows(rows)
 
     def _on_double_click(self, index: QModelIndex):
+        self._hide_hover_card()
         image_id = self._gallery_model.get_image_id(index.row())
         if image_id is not None:
             self.image_double_clicked.emit(image_id)
@@ -575,6 +687,7 @@ class GalleryView(QListView):
         return ids
 
     def _on_context_menu(self, pos):
+        self._hide_hover_card()
         ids = self.get_selected_ids()
         if ids:
             self.context_menu_requested.emit(ids, self.viewport().mapToGlobal(pos))

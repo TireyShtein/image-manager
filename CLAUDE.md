@@ -83,6 +83,8 @@ All loaded rows are handed to a `GalleryPager` instance (`_pager`), which stores
 
 **Error overlay:** `GalleryModel` maintains `_error_ids: set[int]`. `mark_error(image_id)` adds an ID and emits `dataChanged` for that row. `data(DecorationRole)` applies `_apply_error_overlay(pix)` for errored items — a red wash + red border + white "!" badge painted onto a copy of the thumbnail. Cleared on `set_images()` (folder navigation). `GalleryView.mark_image_error(image_id)` is the public entry point, called by `MainWindow` when `FileOpWorker.item_error` fires.
 
+**Hover metadata card:** `GalleryView` installs an `eventFilter` on its viewport (`viewport().setMouseTracking(True)`). On `MouseMove`, `_on_hover_move` maps the cursor to a model row via `indexAt()`; after 500ms (`_hover_timer`) `_show_hover_card` fires — queries filename, `os.path.getsize`, and `db.get_tags_for_images` (all synchronous/fast) then shows a `QFrame(ToolTip)` card beside the cursor with screen-boundary clamping. `QEvent.Type.ToolTip` events are swallowed to prevent native tooltip overlap. Card is hidden on scroll (`verticalScrollBar.valueChanged`), page change, folder load, context menu, and double-click. `GalleryModel.get_item(row)` is a bounds-safe public accessor used by the card.
+
 ### Gallery rating filter (SFW Mode)
 `GalleryView` has a `_excluded_rating_tags: list[str]` attribute. `set_rating_filter(excluded)` sets which `rating:*` tags cause images to be hidden. Both `load_folder` and `load_images` run rows through `_apply_rating_filter()`, which calls `db.filter_out_images_with_tags(ids, excluded_tags)` to drop any image that has one of the excluded tags. Untagged images always pass through.
 
