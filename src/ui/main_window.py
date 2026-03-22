@@ -62,6 +62,7 @@ class FileOpWorker(QThread):
                 self.item_done.emit(image_id)
             except Exception as e:
                 errors.append(str(e))
+                self.item_error.emit(image_id, str(e))
             self.progress.emit(i + 1, total)
         self.finished_op.emit(success, errors)
 
@@ -592,6 +593,10 @@ class MainWindow(QMainWindow):
         menu.addAction("Open Folder…", self._open_folder)
         menu.addAction("Scan Folder into Library", self._scan_folder)
         menu.addSeparator()
+        tags_menu = menu.addMenu("Tags")
+        act_add = tags_menu.addAction("Add tag…")
+        act_add.setEnabled(False)
+        act_add.setToolTip("Select images first")
         menu.addAction("Albums…", self._show_album_dialog)
         menu.exec(pos)
 
@@ -654,6 +659,9 @@ class MainWindow(QMainWindow):
         self._file_op_worker = FileOpWorker(op, image_ids, dest, self)
         if op == "move":
             self._file_op_worker.item_done.connect(self._gallery.remove_image)
+        self._file_op_worker.item_error.connect(
+            lambda img_id, msg: self._gallery.mark_image_error(img_id)
+        )
         self._file_op_worker.progress.connect(
             lambda cur, tot: (self._progress.setValue(cur),
                               self._progress_counter.setText(f"{cur} / {tot}"))
@@ -739,7 +747,8 @@ class MainWindow(QMainWindow):
         self._progress.setValue(current)
         self._progress_counter.setText(f"{current} / {total}")
 
-    def _on_wd14_done(self, image_id: int, tags: list):
+    def _on_wd14_done(self, image_id: int, filename: str, tags: list):
+        self._status_label.setText(f"Tagged: {filename} (+{len(tags)} tags)")
         self._tag_refresh_timer.start()
 
     def _on_wd14_error(self, image_id: int, msg: str):
@@ -752,11 +761,16 @@ class MainWindow(QMainWindow):
         if self._progress.isVisible():
             self._set_counter_progress_visible(False)
 
-    def _on_wd14_finished(self):
+    def _on_wd14_finished(self, tagged: int, skipped: int, errors: int):
         self._set_counter_progress_visible(False)
         self._act_cancel_wd14.setEnabled(False)
         self._act_wd14.setEnabled(True)
-        self._status_label.setText("WD14 tagging complete.")
+        parts = [f"{tagged} tagged"]
+        if skipped:
+            parts.append(f"{skipped} skipped (already tagged)")
+        if errors:
+            parts.append(f"{errors} error{'s' if errors != 1 else ''}")
+        self._status_label.setText(f"WD14 done: {', '.join(parts)}.")
         self._tag_refresh_timer.start()
 
     # ------------------------------------------------------------------ Rating Sort

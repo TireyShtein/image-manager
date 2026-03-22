@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import QListView, QAbstractItemView, QStyle
 from PyQt6.QtCore import (Qt, QAbstractListModel, QModelIndex, QSize, QRect,
                            QRunnable, QThreadPool, pyqtSignal, QObject, pyqtSlot,
                            QTimer, QPoint)
-from PyQt6.QtGui import QPixmap, QPainter, QFont, QColor
+from PyQt6.QtGui import QPixmap, QPainter, QFont, QColor, QPen
 from src.core import thumbnail_cache, database as db
 from typing import NamedTuple
 
@@ -154,6 +154,7 @@ class GalleryModel(QAbstractListModel):
         self._thumb_token: int = 0
         # Track which rows have been queued for thumbnail loading
         self._queued: set[int] = set()
+        self._error_ids: set[int] = set()
 
     def set_images(self, rows):
         self.beginResetModel()
@@ -163,6 +164,7 @@ class GalleryModel(QAbstractListModel):
         self._total = len(self._items)
         self._loaded = 0
         self._queued = set()
+        self._error_ids = set()
         self._thumb_token += 1
         self.endResetModel()
         if self._total == 0:
@@ -257,15 +259,19 @@ class GalleryModel(QAbstractListModel):
             return None
         item = self._items[index.row()]
         if role == Qt.ItemDataRole.DecorationRole:
-            if item["display_pix"] is not None:
-                return item["display_pix"]
-            return _get_placeholder(self._display_size)
+            pix = item["display_pix"] if item["display_pix"] is not None else _get_placeholder(self._display_size)
+            if item["id"] in self._error_ids:
+                pix = self._apply_error_overlay(pix)
+            return pix
         if role == Qt.ItemDataRole.DisplayRole:
             if self._display_size < 140:
                 return None
             return os.path.basename(item["path"])
         if role == Qt.ItemDataRole.ToolTipRole:
-            return item["path"]
+            tip = item["path"]
+            if item["id"] in self._error_ids:
+                tip += "\n[File operation failed]"
+            return tip
         if role == Qt.ItemDataRole.UserRole:
             return item["id"]
         return None
@@ -293,12 +299,37 @@ class GalleryModel(QAbstractListModel):
                 new_queued.add(q)
         self._queued = new_queued
         self.endRemoveRows()
+        self._error_ids.discard(image_id)
         # Adjust counters so all_loaded can still fire after removals
         self._total = max(0, self._total - 1)
         if was_loaded:
             self._loaded = max(0, self._loaded - 1)
         if self._loaded >= self._total:
             self._signals.all_loaded.emit()
+
+    def mark_error(self, image_id: int):
+        """Mark a thumbnail with a red error overlay (failed file operation)."""
+        self._error_ids.add(image_id)
+        idx = self._id_index.get(image_id)
+        if idx is not None:
+            index = self.index(idx)
+            self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
+
+    def _apply_error_overlay(self, pix: QPixmap) -> QPixmap:
+        result = QPixmap(pix)
+        painter = QPainter(result)
+        painter.fillRect(result.rect(), QColor(220, 40, 40, 70))
+        painter.setPen(QPen(QColor(220, 40, 40, 180), 2))
+        painter.drawRect(1, 1, result.width() - 2, result.height() - 2)
+        painter.setPen(QColor(255, 255, 255))
+        font = painter.font()
+        font.setPointSize(10)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.fillRect(result.width() - 18, 2, 16, 16, QColor(220, 40, 40, 220))
+        painter.drawText(result.width() - 18, 2, 16, 16, Qt.AlignmentFlag.AlignCenter, "!")
+        painter.end()
+        return result
 
     def count(self) -> int:
         return len(self._items)
@@ -562,3 +593,7 @@ class GalleryView(QListView):
         else:
             self._gallery_model.remove_image(image_id)
             self._refresh_size()
+
+    def mark_image_error(self, image_id: int):
+        """Mark a thumbnail with a red error overlay (failed file operation)."""
+        self._gallery_model.mark_error(image_id)
