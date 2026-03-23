@@ -608,7 +608,7 @@ class TriageImageViewer(ImageViewer):
     def _triage_album_picker(self):
         self._dismiss_overlays()
         from src.core import database as db
-        albums = db.get_all_albums()
+        albums = db.get_all_albums_with_counts()
         if not albums:
             QToolTip.showText(
                 QCursor.pos(),
@@ -632,8 +632,7 @@ class TriageImageViewer(ImageViewer):
         lst = QListWidget()
         lst.setStyleSheet(_TRIAGE_LIST_QSS)
         for alb in albums:
-            count = db.get_album_image_count(alb["id"])
-            item = QListWidgetItem(f"{alb['name']} ({count})")
+            item = QListWidgetItem(f"{alb['name']} ({alb['count']})")
             item.setData(Qt.ItemDataRole.UserRole, alb["id"])
             item.setData(Qt.ItemDataRole.UserRole + 1, alb["name"])
             lst.addItem(item)

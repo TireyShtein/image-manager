@@ -641,6 +641,16 @@ def get_all_albums() -> list:
         return conn.execute("SELECT * FROM albums ORDER BY name").fetchall()
 
 
+def get_all_albums_with_counts() -> list:
+    """Return all albums with image count in a single query (avoids N+1)."""
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT a.id, a.name, COUNT(ai.image_id) as count "
+            "FROM albums a LEFT JOIN album_images ai ON a.id = ai.album_id "
+            "GROUP BY a.id ORDER BY a.name"
+        ).fetchall()
+
+
 def get_album(album_id: int) -> Optional[sqlite3.Row]:
     with get_connection() as conn:
         return conn.execute("SELECT * FROM albums WHERE id = ?", (album_id,)).fetchone()

@@ -204,9 +204,8 @@ class AlbumPanel(QWidget):
 
     def _refresh_albums(self):
         self._list.clear()
-        for row in db.get_all_albums():
-            count = db.get_album_image_count(row["id"])
-            item = QListWidgetItem(f"{row['name']} ({count})")
+        for row in db.get_all_albums_with_counts():
+            item = QListWidgetItem(f"{row['name']} ({row['count']})")
             item.setData(Qt.ItemDataRole.UserRole, row["id"])
             self._list.addItem(item)
 
