@@ -141,6 +141,7 @@ class MainWindow(QMainWindow):
         self._folder_tree = FolderTree()
         self._folder_tree.folder_selected.connect(self._on_folder_selected)
         self._folder_tree.files_selected.connect(self._on_tree_files_selected)
+        self._folder_tree.images_dropped_on_folder.connect(self._on_dnd_folder_drop)
         left_layout.addWidget(self._folder_tree)
         self._splitter.addWidget(self._left_panel)
 
@@ -233,6 +234,7 @@ class MainWindow(QMainWindow):
         self._album_panel = AlbumPanel()
         self._album_panel.album_selected.connect(self._on_album_selected)
         self._album_panel.collection_selected.connect(self._on_collection_selected)
+        self._album_panel.images_added_to_album.connect(self._on_images_added_to_album)
         self._album_dialog: QDialog | None = None
 
     def _build_menu(self):
@@ -876,6 +878,38 @@ class MainWindow(QMainWindow):
 
     def _on_triage_image_trashed(self, image_id: int):
         self._gallery.remove_image(image_id)
+
+    def _on_dnd_folder_drop(self, image_ids: list[int], folder_path: str):
+        """Handle images dragged from gallery and dropped onto a folder in the tree."""
+        if self._file_op_worker and self._file_op_worker.isRunning():
+            QMessageBox.information(self, "Busy",
+                "A file operation is already in progress. Please wait.")
+            return
+        # Filter out images already in the destination folder (same-folder no-op)
+        rows = db.get_images_batch(image_ids)
+        norm_dest = os.path.normpath(folder_path)
+        image_ids = [iid for iid in image_ids
+                     if iid in rows
+                     if os.path.normpath(os.path.dirname(rows[iid]["path"])) != norm_dest]
+        if not image_ids:
+            return
+        n = len(image_ids)
+        msg = f"Move {n} image{'s' if n != 1 else ''} to:\n{folder_path}"
+        if self._active_album_id is not None or self._active_collection_id is not None:
+            msg += "\n\nThese images will remain in their album(s) after moving."
+        reply = QMessageBox.question(
+            self, "Move Images",
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._start_file_op("move", image_ids, folder_path)
+
+    def _on_images_added_to_album(self, count: int, album_name: str):
+        self._status_label.setText(
+            f"Added {count} image{'s' if count != 1 else ''} to \"{album_name}\"")
 
     def _move_images(self, image_ids: list[int]):
         dest = QFileDialog.getExistingDirectory(self, "Move to Folder")

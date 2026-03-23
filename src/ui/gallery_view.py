@@ -1,10 +1,11 @@
+import json
 import os
 from PyQt6.QtWidgets import (QListView, QAbstractItemView, QStyle, QFrame, QLabel,
                              QVBoxLayout, QApplication, QWidget, QPushButton)
 from PyQt6.QtCore import (Qt, QAbstractListModel, QModelIndex, QSize,
                            QRunnable, QThreadPool, pyqtSignal, QObject, pyqtSlot,
-                           QTimer, QPoint, QEvent)
-from PyQt6.QtGui import QPixmap, QPainter, QColor, QPen
+                           QTimer, QPoint, QEvent, QByteArray, QMimeData)
+from PyQt6.QtGui import QPixmap, QPainter, QColor, QPen, QDrag
 from src.core import thumbnail_cache, database as db
 from typing import NamedTuple
 
@@ -41,6 +42,9 @@ _DENSITY_CONFIG: dict[str, _DensityConfig] = {
 
 # Pagination
 PAGE_SIZE = 200
+
+# Drag-and-drop MIME type for image ID payloads
+_MIME_IMAGE_IDS = "application/x-imagemanager-ids"
 
 
 def _compute_thumb_size(count: int) -> int:
@@ -408,6 +412,12 @@ class GalleryModel(QAbstractListModel):
     def rowCount(self, parent=QModelIndex()) -> int:
         return len(self._items)
 
+    def flags(self, index: QModelIndex) -> Qt.ItemFlag:
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        return (Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable |
+                Qt.ItemFlag.ItemIsDragEnabled)
+
     def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid() or index.row() >= len(self._items):
             return None
@@ -534,6 +544,7 @@ class GalleryView(QListView):
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setUniformItemSizes(True)
         self.setSpacing(8)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)  # implies setDragEnabled(True)
         self.setStyleSheet("""
             QListView::item:hover {
                 background: rgba(100, 150, 255, 0.12);
@@ -610,6 +621,56 @@ class GalleryView(QListView):
         self._empty_overlay = _EmptyStateOverlay(self)
         self._empty_overlay.setGeometry(self.viewport().rect())
         self._empty_overlay.hide()
+
+    # ------------------------------------------------------------------
+    # Drag support
+    # ------------------------------------------------------------------
+
+    def startDrag(self, supported_actions):
+        ids = self.get_selected_ids()
+        if not ids:
+            return
+        mime = QMimeData()
+        mime.setData(_MIME_IMAGE_IDS, QByteArray(json.dumps(ids).encode()))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        # Single image with loaded pixmap → use thumbnail; otherwise count badge
+        if len(ids) == 1:
+            item = self._gallery_model.get_item(self.selectedIndexes()[0].row())
+            pix = item.get("display_pix") if item else None
+            if pix and not pix.isNull():
+                drag.setPixmap(pix.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatio,
+                                          Qt.TransformationMode.SmoothTransformation))
+                drag.setHotSpot(QPoint(32, 32))
+            else:
+                drag.setPixmap(self._make_drag_badge(1))
+                drag.setHotSpot(QPoint(22, 22))
+        else:
+            drag.setPixmap(self._make_drag_badge(len(ids)))
+            drag.setHotSpot(QPoint(22, 22))
+        drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction)
+
+    def _make_drag_badge(self, count: int) -> QPixmap:
+        pix = QPixmap(44, 44)
+        pix.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(QColor(80, 130, 255, 210))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(2, 2, 40, 40)
+        p.setPen(QColor(255, 255, 255))
+        font = p.font()
+        font.setBold(True)
+        font.setPointSize(13)
+        p.setFont(font)
+        label = str(count) if count <= 99 else "99+"
+        p.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, label)
+        p.end()
+        return pix
+
+    # ------------------------------------------------------------------
+    # Event filter (hover card)
+    # ------------------------------------------------------------------
 
     def eventFilter(self, obj, event):
         if obj is self.viewport():

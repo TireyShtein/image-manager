@@ -1,6 +1,7 @@
+import json
 import os
 from PyQt6.QtWidgets import QTreeView, QAbstractItemView
-from PyQt6.QtCore import pyqtSignal, QDir, QItemSelectionModel, QTimer
+from PyQt6.QtCore import pyqtSignal, Qt, QDir, QItemSelectionModel, QTimer
 from PyQt6.QtGui import QFileSystemModel
 
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tiff', '.tif'}
@@ -10,14 +11,19 @@ MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 # Name filters for QFileSystemModel (shows these files + all directories)
 _NAME_FILTERS = [f'*{ext}' for ext in MEDIA_EXTENSIONS]
 
+# Drag-and-drop MIME type for image ID payloads (must match gallery_view.py)
+_MIME_IMAGE_IDS = "application/x-imagemanager-ids"
+
 
 class FolderTree(QTreeView):
-    folder_selected = pyqtSignal(str)          # folder path clicked
-    files_selected = pyqtSignal(list)          # list of file paths selected
+    folder_selected = pyqtSignal(str)                  # folder path clicked
+    files_selected = pyqtSignal(list)                  # list of file paths selected
+    images_dropped_on_folder = pyqtSignal(list, str)   # (image_ids, folder_path)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._model = QFileSystemModel()
+        self._model.setReadOnly(True)   # disables QFileSystemModel's built-in drop-to-move
         self._model.setRootPath(QDir.rootPath())
         self._model.setFilter(
             QDir.Filter.AllDirs |
@@ -37,6 +43,9 @@ class FolderTree(QTreeView):
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setAnimated(True)
         self.setHeaderHidden(True)
+
+        self.setAcceptDrops(True)
+        self._pre_drag_index = None   # saved current index before drag enters
 
         self.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.clicked.connect(self._on_clicked)
@@ -99,3 +108,73 @@ class FolderTree(QTreeView):
             sel.blockSignals(False)
             self.blockSignals(False)
         QTimer.singleShot(100, _do_select)
+
+    # ------------------------------------------------------------------
+    # Drag-and-drop: folder drop target
+    # ------------------------------------------------------------------
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(_MIME_IMAGE_IDS):
+            # Save the user's current selection before drag highlight changes it
+            self._pre_drag_index = self.currentIndex()
+            event.setDropAction(Qt.DropAction.MoveAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if not event.mimeData().hasFormat(_MIME_IMAGE_IDS):
+            event.ignore()
+            return
+        index = self.indexAt(event.position().toPoint())
+        if index.isValid() and self._model.isDir(index):
+            # Block signals so selectionChanged doesn't fire (which would reload
+            # the gallery). ClearAndSelect gives the full blue selection highlight
+            # the user recognises from normal folder clicks — much more visible
+            # than NoUpdate's subtle dotted-border "current item" indicator.
+            # viewport().update() is required because blockSignals also suppresses
+            # Qt's internal repaint notification — the view won't redraw otherwise.
+            if index != self.currentIndex():  # skip repaint if already on same row
+                self.selectionModel().blockSignals(True)
+                self.selectionModel().setCurrentIndex(
+                    index, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+                self.selectionModel().blockSignals(False)
+                self.viewport().update()
+            event.setDropAction(Qt.DropAction.MoveAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def _restore_pre_drag_selection(self):
+        """Restore the selection that existed before the drag started."""
+        self.selectionModel().blockSignals(True)
+        if self._pre_drag_index is not None and self._pre_drag_index.isValid():
+            self.selectionModel().setCurrentIndex(
+                self._pre_drag_index, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+        else:
+            self.selectionModel().clearSelection()
+        self.selectionModel().blockSignals(False)
+        self.viewport().update()  # repaint — blocked signals suppress Qt's own dirty notification
+        self._pre_drag_index = None
+
+    def dragLeaveEvent(self, event):
+        self._restore_pre_drag_selection()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        if not event.mimeData().hasFormat(_MIME_IMAGE_IDS):
+            event.ignore()
+            return
+        index = self.indexAt(event.position().toPoint())
+        if not index.isValid() or not self._model.isDir(index):
+            event.ignore()
+            return
+        folder_path = self._model.filePath(index)
+        try:
+            ids = json.loads(bytes(event.mimeData().data(_MIME_IMAGE_IDS)).decode())
+        except (ValueError, KeyError):
+            event.ignore()
+            return
+        self._restore_pre_drag_selection()
+        event.acceptProposedAction()
+        self.images_dropped_on_folder.emit(ids, folder_path)

@@ -2,8 +2,8 @@ import json
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
                               QListWidgetItem, QPushButton, QLineEdit, QLabel,
                               QInputDialog, QMessageBox, QFrame, QMenu)
-from PyQt6.QtCore import pyqtSignal, Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import pyqtSignal, Qt, QEvent
+from PyQt6.QtGui import QFont, QColor
 from src.core import database as db
 
 _LIST_QSS = (
@@ -13,6 +13,8 @@ _LIST_QSS = (
     "QListWidget::item:selected { background: rgba(80, 130, 255, 0.22); "
     "color: palette(text); border-radius: 4px; }"
 )
+_MIME_IMAGE_IDS = "application/x-imagemanager-ids"
+
 _BTN_QSS = (
     "QPushButton { padding: 3px 8px; border: 1px solid rgba(255,255,255,0.15); "
     "border-radius: 4px; }"
@@ -23,8 +25,9 @@ _BTN_QSS = (
 
 
 class AlbumPanel(QWidget):
-    album_selected = pyqtSignal(int)       # album_id
-    collection_selected = pyqtSignal(int)  # filter_id
+    album_selected = pyqtSignal(int)           # album_id
+    collection_selected = pyqtSignal(int)      # filter_id
+    images_added_to_album = pyqtSignal(int, str)  # (count, album_name)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -53,6 +56,10 @@ class AlbumPanel(QWidget):
         self._list.setStyleSheet(_LIST_QSS)
         self._list.itemDoubleClicked.connect(self._on_album_double_clicked)
         self._list.currentItemChanged.connect(lambda *_: self._update_button_states())
+        self._list.setAcceptDrops(True)
+        self._list.viewport().setAcceptDrops(True)
+        self._list.viewport().installEventFilter(self)
+        self._highlighted_album_item = None
         layout.addWidget(self._list)
 
         row = QHBoxLayout()
@@ -132,6 +139,64 @@ class AlbumPanel(QWidget):
     def set_selected_images(self, image_ids: list[int]):
         self._selected_image_ids = image_ids
         self._update_button_states()
+
+    # ------------------------------------------------------------------
+    # Drag-and-drop: album list drop target
+    # ------------------------------------------------------------------
+
+    def eventFilter(self, obj, event):
+        if obj is not self._list.viewport():
+            return super().eventFilter(obj, event)
+        t = event.type()
+        if t == QEvent.Type.DragEnter:
+            # Accept for the whole widget if MIME type matches — DragMove handles
+            # per-position accept/ignore. Ignoring DragEnter blocks all DragMove
+            # delivery, so we must accept here unconditionally for our MIME type.
+            if event.mimeData().hasFormat(_MIME_IMAGE_IDS):
+                event.setDropAction(Qt.DropAction.CopyAction)
+                event.accept()
+            else:
+                event.ignore()
+            return True
+        if t == QEvent.Type.DragMove:
+            item = self._list.itemAt(event.position().toPoint())
+            self._set_album_highlight(item)
+            if item and event.mimeData().hasFormat(_MIME_IMAGE_IDS):
+                event.setDropAction(Qt.DropAction.CopyAction)
+                event.accept()
+            else:
+                event.ignore()
+            return True
+        if t == QEvent.Type.DragLeave:
+            self._set_album_highlight(None)
+            return True
+        if t == QEvent.Type.Drop:
+            self._set_album_highlight(None)
+            item = self._list.itemAt(event.position().toPoint())
+            if not item or not event.mimeData().hasFormat(_MIME_IMAGE_IDS):
+                event.ignore()
+                return True
+            album_id = item.data(Qt.ItemDataRole.UserRole)
+            album_name = item.text().rsplit(" (", 1)[0]
+            try:
+                ids = json.loads(bytes(event.mimeData().data(_MIME_IMAGE_IDS)).decode())
+            except (ValueError, KeyError):
+                event.ignore()
+                return True
+            for image_id in ids:
+                db.add_image_to_album(album_id, image_id)
+            self.refresh()
+            event.acceptProposedAction()
+            self.images_added_to_album.emit(len(ids), album_name)
+            return True
+        return super().eventFilter(obj, event)
+
+    def _set_album_highlight(self, item):
+        if self._highlighted_album_item and self._highlighted_album_item is not item:
+            self._highlighted_album_item.setBackground(Qt.GlobalColor.transparent)
+        self._highlighted_album_item = item
+        if item:
+            item.setBackground(QColor(80, 130, 255, 110))
 
     def refresh(self):
         self._refresh_albums()
