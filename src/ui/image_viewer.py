@@ -2,9 +2,11 @@ import os
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
                               QLabel, QGraphicsView, QGraphicsScene,
                               QFrame, QListWidget, QListWidgetItem, QLineEdit,
-                              QMessageBox, QCompleter, QMenu, QToolTip)
+                              QMessageBox, QCompleter, QMenu, QToolTip,
+                              QSplitter, QScrollArea, QGridLayout, QWidget)
 from PyQt6.QtCore import (Qt, QRectF, QRunnable, QThreadPool, QObject,
-                          pyqtSignal, pyqtSlot, QTimer, QEvent, QStringListModel)
+                          pyqtSignal, pyqtSlot, QTimer, QEvent, QStringListModel,
+                          QPoint, QSettings)
 from PyQt6.QtGui import (QPixmap, QImage, QFont, QWheelEvent, QKeyEvent,
                          QKeySequence, QShortcut, QCursor)
 import subprocess
@@ -30,6 +32,13 @@ class _ImageLoadRunnable(QRunnable):
 VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.wmv', '.flv', '.m4v'}
 
 
+def _make_separator() -> QFrame:
+    sep = QFrame()
+    sep.setFrameShape(QFrame.Shape.HLine)
+    sep.setStyleSheet("color: rgba(255,255,255,0.10);")
+    return sep
+
+
 class ImageViewer(QDialog):
     def __init__(self, image_id: int, image_path: str, parent=None,
                  all_images: list[tuple[int, str]] | None = None, current_index: int = 0):
@@ -41,14 +50,12 @@ class ImageViewer(QDialog):
         self.setWindowTitle(os.path.basename(image_path))
         ext = os.path.splitext(image_path)[1].lower()
         if ext in VIDEO_EXTENSIONS:
-            # Open video with the system default player and close this dialog
             self._open_with_system(image_path)
-            # Schedule close after exec() starts
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(0, self.close)
             self.resize(1, 1)
             return
-        self.resize(900, 700)
+        self.resize(1200, 750)
         self._fit_mode = True
         self._load_signals = _ImageLoadSignals()
         self._load_signals.loaded.connect(self._on_image_loaded)
@@ -66,20 +73,36 @@ class ImageViewer(QDialog):
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # --- Horizontal splitter: image view (left) + detail panel (right) ---
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.setChildrenCollapsible(False)
+        self._splitter.setHandleWidth(4)
+        self._splitter.setStyleSheet(
+            "QSplitter::handle { background: rgba(255,255,255,0.08); }"
+        )
 
         self._view = ZoomableGraphicsView(self)
-        layout.addWidget(self._view)
+        self._view.setMinimumWidth(400)
+        self._splitter.addWidget(self._view)
 
-        # Tag strip — shows tags for the current image
-        self._tags_label = QLabel("No tags")
-        self._tags_label.setWordWrap(True)
-        self._tags_label.setMaximumHeight(46)
-        self._tags_label.setStyleSheet(
-            "QLabel { color: #999; font-size: 10px; background: rgba(0,0,0,0.25);"
-            " padding: 4px 8px; border-top: 1px solid rgba(255,255,255,0.07); }"
-        )
-        layout.addWidget(self._tags_label)
+        self._build_detail_panel()
+        self._splitter.addWidget(self._detail_scroll)
 
+        self._splitter.setStretchFactor(0, 1)   # view stretches
+        self._splitter.setStretchFactor(1, 0)   # panel does not stretch
+        self._splitter.setSizes([900, 300])
+        self._splitter.splitterMoved.connect(self._on_splitter_moved)
+
+        # Restore persisted splitter position
+        state = QSettings("ImageManager", "ImageManager").value("viewer_splitter_state")
+        if state:
+            self._splitter.restoreState(state)
+
+        layout.addWidget(self._splitter, 1)
+
+        # --- Bottom nav bar (outside splitter, fixed height) ---
         bar = QHBoxLayout()
         bar.setContentsMargins(8, 4, 8, 4)
 
@@ -101,10 +124,6 @@ class ImageViewer(QDialog):
         self._btn_next.clicked.connect(lambda: self._navigate(1))
         bar.addWidget(self._btn_next)
 
-        self._meta_label = QLabel("")
-        self._meta_label.setStyleSheet("color: gray; font-size: 11px;")
-        bar.addWidget(self._meta_label)
-
         self._zoom_label = QLabel("Fit")
         self._zoom_label.setFixedWidth(52)
         self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -121,34 +140,187 @@ class ImageViewer(QDialog):
         btn_100.clicked.connect(self._actual_size)
         bar.addWidget(btn_100)
 
-        layout.addLayout(bar)
+        layout.addLayout(bar, 0)
         self._view._zoom_callback = self._on_zoom_changed
         self._update_nav_buttons()
 
-    def _refresh_tags(self):
+    def _build_detail_panel(self):
+        self._detail_scroll = QScrollArea()
+        self._detail_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._detail_scroll.setWidgetResizable(True)
+        self._detail_scroll.setMinimumWidth(200)
+        self._detail_scroll.setMaximumWidth(450)
+        self._detail_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._detail_scroll.setStyleSheet(
+            "QScrollArea { border-left: 1px solid rgba(255,255,255,0.10); }"
+        )
+
+        self._detail_widget = QWidget()  # no explicit parent — setWidget takes ownership
+        panel = QVBoxLayout(self._detail_widget)
+        panel.setContentsMargins(12, 12, 12, 12)
+        panel.setSpacing(6)
+
+        # --- Filename + path ---
+        self._detail_filename = QLabel()
+        fn_font = self._detail_filename.font()
+        fn_font.setWeight(QFont.Weight.Bold)
+        self._detail_filename.setFont(fn_font)
+        self._detail_filename.setWordWrap(True)
+        panel.addWidget(self._detail_filename)
+
+        self._detail_path = QLabel()
+        self._detail_path.setWordWrap(True)
+        self._detail_path.setStyleSheet("color: rgba(180,180,180,0.65); font-size: 10px;")
+        panel.addWidget(self._detail_path)
+
+        panel.addWidget(_make_separator())
+
+        # --- Metadata grid ---
+        grid_widget = QWidget()
+        grid = QGridLayout(grid_widget)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(4)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnMinimumWidth(0, 70)
+
+        _hdr_style = "color: rgba(180,180,180,0.55); font-size: 10px;"
+        _val_style = "font-size: 11px;"
+
+        for row_idx, (label_text, attr) in enumerate([
+            ("Dimensions", "_detail_dims"),
+            ("File size",  "_detail_filesize"),
+            ("Added",      "_detail_date_added"),
+            ("Modified",   "_detail_date_modified"),
+        ]):
+            hdr = QLabel(label_text)
+            hdr.setStyleSheet(_hdr_style)
+            val = QLabel("—")
+            val.setStyleSheet(_val_style)
+            val.setWordWrap(True)
+            grid.addWidget(hdr, row_idx, 0)
+            grid.addWidget(val, row_idx, 1)
+            setattr(self, attr, val)
+
+        panel.addWidget(grid_widget)
+        panel.addWidget(_make_separator())
+
+        # --- Albums section ---
+        alb_hdr = QLabel("Albums")
+        alb_font = alb_hdr.font()
+        alb_font.setWeight(QFont.Weight.DemiBold)
+        alb_hdr.setFont(alb_font)
+        alb_hdr.setStyleSheet("font-size: 11px;")
+        panel.addWidget(alb_hdr)
+
+        self._detail_albums = QLabel("—")
+        self._detail_albums.setWordWrap(True)
+        self._detail_albums.setStyleSheet("font-size: 11px; color: #b4c7d9;")
+        panel.addWidget(self._detail_albums)
+
+        panel.addWidget(_make_separator())
+
+        # --- Tags section ---
+        tags_hdr = QLabel("Tags")
+        tags_font = tags_hdr.font()
+        tags_font.setWeight(QFont.Weight.DemiBold)
+        tags_hdr.setFont(tags_font)
+        tags_hdr.setStyleSheet("font-size: 11px;")
+        panel.addWidget(tags_hdr)
+
+        self._detail_rating_tags = QLabel()
+        self._detail_rating_tags.setWordWrap(True)
+        self._detail_rating_tags.setStyleSheet("font-size: 11px; color: #f5a623;")
+        self._detail_rating_tags.hide()
+        panel.addWidget(self._detail_rating_tags)
+
+        self._detail_general_tags = QLabel()
+        self._detail_general_tags.setWordWrap(True)
+        self._detail_general_tags.setStyleSheet("font-size: 11px; color: #b4c7d9;")
+        panel.addWidget(self._detail_general_tags)
+
+        panel.addStretch(1)
+
+        self._detail_scroll.setWidget(self._detail_widget)
+
+    # ------------------------------------------------------------------ Detail panel refresh
+
+    def _refresh_detail_panel(self):
+        self._refresh_metadata_section()
+        self._refresh_albums_section()
+        self._refresh_tags_section()
+
+    def _refresh_metadata_section(self):
+        from src.core import database as db
+        basename = os.path.basename(self.image_path)
+        self._detail_filename.setText(basename)
+        self._detail_path.setText(self.image_path)
+        self._detail_path.setToolTip(self.image_path)
+
+        row = db.get_image(self.image_id)
+        if row:
+            if row["width"] and row["height"]:
+                self._detail_dims.setText(f"{row['width']}×{row['height']}")
+            else:
+                self._detail_dims.setText("—")
+
+            if row["file_size"]:
+                size_b = row["file_size"]
+                size_str = (f"{size_b / (1024*1024):.1f} MB"
+                            if size_b >= 1024*1024 else f"{size_b // 1024} KB")
+                self._detail_filesize.setText(size_str)
+            else:
+                self._detail_filesize.setText("—")
+
+            def _fmt(iso: str | None) -> str:
+                if not iso:
+                    return "—"
+                return iso[:16].replace("T", "  ")
+
+            self._detail_date_added.setText(_fmt(row["date_added"]))
+            self._detail_date_modified.setText(_fmt(row["date_modified"]))
+        else:
+            for attr in ("_detail_dims", "_detail_filesize",
+                         "_detail_date_added", "_detail_date_modified"):
+                getattr(self, attr).setText("—")
+
+    def _refresh_albums_section(self):
+        from src.core import database as db
+        albums = db.get_albums_for_image(self.image_id)
+        if albums:
+            self._detail_albums.setText(", ".join(name for _, name in albums))
+        else:
+            self._detail_albums.setText("—")
+
+    def _refresh_tags_section(self):
         from src.core import database as db
         rows = db.get_tags_for_images([self.image_id])
-        if not rows:
-            self._tags_label.setText("No tags")
-            return
-        rating = [r["name"] for r in rows if r["name"].startswith("rating:")]
-        others = sorted(r["name"] for r in rows if not r["name"].startswith("rating:"))
-        all_tags = rating + others
-        self._tags_label.setText("  ·  ".join(all_tags))
+        rating_tags = [r["name"] for r in rows if r["name"].startswith("rating:")]
+        general_tags = sorted(r["name"] for r in rows if not r["name"].startswith("rating:"))
+
+        if rating_tags:
+            self._detail_rating_tags.setText("  ·  ".join(rating_tags))
+            self._detail_rating_tags.show()
+        else:
+            self._detail_rating_tags.hide()
+
+        self._detail_general_tags.setText(
+            "  ·  ".join(general_tags) if general_tags else "No tags"
+        )
+
+    # ------------------------------------------------------------------ Image loading
 
     def _load_image(self):
-        self._refresh_tags()
-        # Show a loading placeholder while decode runs on a background thread
+        self._refresh_detail_panel()
         self._set_nav_enabled(False)
         loading_scene = QGraphicsScene()
         loading_scene.addText("Loading…", QFont("Arial", 2))
         self._view.setScene(loading_scene)
-        self._meta_label.setText("")
         worker = _ImageLoadRunnable(self.image_path, self._load_signals)
         QThreadPool.globalInstance().start(worker)
 
     def _on_image_loaded(self, img: QImage, path: str):
-        # Ignore if user navigated away before this finished
         if path != self.image_path:
             return
         if img.isNull():
@@ -162,16 +334,22 @@ class ImageViewer(QDialog):
         scene.addPixmap(pixmap)
         self._view.setScene(scene)
         self._view.setSceneRect(QRectF(pixmap.rect()))
-        w, h = pixmap.width(), pixmap.height()
-        try:
-            size_b = os.path.getsize(self.image_path)
-            size_str = f"{size_b / (1024*1024):.1f} MB" if size_b >= 1024*1024 else f"{size_b // 1024} KB"
-        except OSError:
-            size_str = "?"
-        self._meta_label.setText(f"{w}×{h}  {size_str}")
+        # Fill in dims/filesize only if DB had no values (shown as "—")
+        if self._detail_dims.text() == "—":
+            self._detail_dims.setText(f"{pixmap.width()}×{pixmap.height()}")
+        if self._detail_filesize.text() == "—":
+            try:
+                size_b = os.path.getsize(self.image_path)
+                size_str = (f"{size_b / (1024*1024):.1f} MB"
+                            if size_b >= 1024*1024 else f"{size_b // 1024} KB")
+                self._detail_filesize.setText(size_str)
+            except OSError:
+                pass
         self._fit_mode = True
         self._fit()
         self._set_nav_enabled(True)
+
+    # ------------------------------------------------------------------ Navigation
 
     def _update_nav_buttons(self):
         has_nav = len(self._all_images) > 1
@@ -195,9 +373,20 @@ class ImageViewer(QDialog):
         if hasattr(self, '_view') and self._view.scene() and self._fit_mode:
             self._fit()
 
+    def closeEvent(self, event):
+        if hasattr(self, '_splitter'):
+            QSettings("ImageManager", "ImageManager").setValue(
+                "viewer_splitter_state", self._splitter.saveState()
+            )
+        super().closeEvent(event)
+
     def _on_zoom_changed(self, zoom: float):
         self._zoom_label.setText(f"{int(zoom * 100)}%")
         self._fit_mode = False
+
+    def _on_splitter_moved(self, pos: int, index: int):
+        if self._fit_mode:
+            self._fit()
 
     def _navigate(self, delta: int):
         if not self._all_images:
@@ -277,34 +466,42 @@ class TriageImageViewer(ImageViewer):
 
     def __init__(self, image_id: int, image_path: str, parent=None,
                  all_images: list[tuple[int, str]] | None = None, current_index: int = 0):
-        super().__init__(image_id, image_path, parent, all_images, current_index)
+        # Initialize plain fields before super().__init__ to avoid AttributeError
+        # if any Qt event fires during parent __init__ (e.g. resizeEvent, showEvent)
         self._triage_hud: QLabel | None = None
         self._tag_input_overlay: QFrame | None = None
         self._album_picker: QFrame | None = None
         self._trashed_ids: list[int] = []
         self._triage_shortcuts: list[QShortcut] = []
+        super().__init__(image_id, image_path, parent, all_images, current_index)
+        # QTimer requires QObject (super) to be initialized first
         self._hud_reset_timer = QTimer(self)
         self._hud_reset_timer.setSingleShot(True)
         self._hud_reset_timer.setInterval(1500)
         self._hud_reset_timer.timeout.connect(self._reset_hud_text)
-        # Only set up triage controls if _setup_ui was called (non-video path)
         if hasattr(self, '_view'):
             self._setup_triage_hud()
             self._setup_triage_shortcuts()
 
     def _setup_triage_hud(self):
-        self._triage_hud = QLabel(_HUD_LEGEND, self)
+        # Parent to _view so geometry is relative to the image area, not the full dialog
+        self._triage_hud = QLabel(_HUD_LEGEND, self._view)
         self._triage_hud.setStyleSheet(
             "QLabel { background: rgba(0,0,0,0.65); color: #888; font-size: 10px;"
             " border-top: 1px solid rgba(255,255,255,0.12); padding: 4px 10px; }"
         )
         self._triage_hud.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._triage_hud.raise_()
+        self._position_hud()
 
     def _position_hud(self):
         if self._triage_hud:
             hud_h = self._triage_hud.sizeHint().height()
-            self._triage_hud.setGeometry(0, self.height() - hud_h, self.width(), hud_h)
+            # Geometry is in _view local coordinates (HUD is parented to _view)
+            self._triage_hud.setGeometry(
+                0, self._view.height() - hud_h,
+                self._view.width(), hud_h
+            )
 
     def _setup_triage_shortcuts(self):
         mappings = [
@@ -341,6 +538,10 @@ class TriageImageViewer(ImageViewer):
         self._dismiss_overlays()
         self._position_hud()
 
+    def _on_splitter_moved(self, pos: int, index: int):  # type: ignore[override]
+        super()._on_splitter_moved(pos, index)
+        self._position_hud()
+
     def _navigate(self, delta: int):
         self._dismiss_overlays()
         super()._navigate(delta)
@@ -350,7 +551,7 @@ class TriageImageViewer(ImageViewer):
     def _triage_star(self):
         from src.core import database as db
         db.add_tags_to_image_batch(self.image_id, ["star"])
-        self._refresh_tags()
+        self._refresh_tags_section()   # lightweight — only tags section
         self._flash_hud("★  Starred")
 
     def _triage_tag_input(self):
@@ -376,7 +577,6 @@ class TriageImageViewer(ImageViewer):
             "QLineEdit { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);"
             " border-radius: 3px; color: white; font-size: 11px; padding: 2px 6px; }"
         )
-        # Autocomplete from DB tags
         tag_names = [r["name"] for r in db.get_all_tags_with_counts()]
         completer = QCompleter(tag_names, edit)
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
@@ -401,7 +601,7 @@ class TriageImageViewer(ImageViewer):
         if name:
             from src.core import database as db
             db.add_tags_to_image_batch(self.image_id, [name])
-            self._refresh_tags()
+            self._refresh_tags_section()   # lightweight — only tags section
             self._flash_hud(f"Tagged: {name}")
         self._dismiss_overlays()
 
@@ -462,6 +662,7 @@ class TriageImageViewer(ImageViewer):
         from src.core import database as db
         db.add_image_to_album(album_id, self.image_id)
         self._dismiss_overlays()
+        self._refresh_albums_section()   # update albums list in detail panel
         self._flash_hud(f"Added to: {album_name}")
 
     def _triage_delete(self):
@@ -476,7 +677,6 @@ class TriageImageViewer(ImageViewer):
         self._trashed_ids.append(old_id)
         self._all_images.pop(old_index)
         if not self._all_images:
-            # accept() does not trigger closeEvent in PyQt6 — emit before closing
             for iid in self._trashed_ids:
                 self.image_trashed.emit(iid)
             self._trashed_ids.clear()
@@ -494,12 +694,13 @@ class TriageImageViewer(ImageViewer):
     # ------------------------------------------------------------------ Overlays
 
     def _position_overlay(self, container: QFrame):
-        """Centre overlay horizontally, just above the HUD."""
+        """Centre overlay horizontally over the image view, just above the HUD."""
         container.adjustSize()
         hud_h = self._triage_hud.sizeHint().height() if self._triage_hud else 30
-        x = max(0, (self.width() - container.sizeHint().width()) // 2)
-        y = self.height() - hud_h - container.sizeHint().height() - 8
-        container.move(x, max(0, y))
+        # Compute position in _view local coords, then map to dialog coords
+        x = max(0, (self._view.width() - container.sizeHint().width()) // 2)
+        y = max(0, self._view.height() - hud_h - container.sizeHint().height() - 8)
+        container.move(self._view.mapTo(self, QPoint(x, y)))
 
     def _dismiss_overlays(self):
         for attr in ("_tag_input_overlay", "_album_picker"):

@@ -175,9 +175,19 @@ The search bar has `QCompleter` autocomplete backed by a `QStringListModel` sour
 **Thumbnail progress coalescing:** `GalleryModel._signals.progress` can fire up to 200 times per page load. `GalleryView` interposes a 50ms single-shot `QTimer` (`_loading_flush_timer`) — `_on_thumb_progress_raw` stores the latest `(loaded, total)` pair and either flushes immediately (when complete) or starts the timer if not already running. `_flush_thumb_progress` emits `thumbnails_loading` at most every 50ms. The timer is stopped in `_load_rows()` to prevent stale page-A values from firing after page-B loads.
 
 ### ImageViewer async decode
-`ImageViewer._load_image()` calls `_refresh_tags()` first (synchronous DB query, fast), then shows a "Loading…" scene, disables nav buttons, and submits a `_ImageLoadRunnable` to the global `QThreadPool`. The runnable creates a `QImage(path)` on the worker thread (`QImage` is thread-safe; `QPixmap` is not). On `_ImageLoadSignals.loaded(img, path)`, the GUI thread checks `path != self.image_path` (stale guard for rapid navigation), checks `img.isNull()` (decode failure → "Failed to load image" text), then calls `QPixmap.fromImage(img)` and builds the scene. `self._load_signals` is created once in `__init__` and reused across all navigations.
+`ImageViewer` is a `QDialog` (1200×750) with a horizontal `QSplitter` (`_splitter`) above a fixed nav bar. Left pane: `ZoomableGraphicsView (_view, minWidth=400)`; right pane: `QScrollArea (_detail_scroll, 200–450px, NoFrame, resizable)` containing a `QWidget (_detail_widget)` with the detail panel. Splitter position is persisted via `QSettings("viewer_splitter_state")` and restored on open; saved in `closeEvent`. `splitterMoved(int,int)` → `_on_splitter_moved` refits the image when `_fit_mode` is True.
 
-**Tag strip:** `_tags_label` is a word-wrapped `QLabel` (max height 46px) inserted between the graphics view and the nav bar. `_refresh_tags()` queries `db.get_tags_for_images([self.image_id])`, sorts rating tags first then others alphabetically, and sets the label text as `"tag1  ·  tag2  ·  …"`. Shows "No tags" for untagged images. Called at the start of `_load_image()` so tags appear immediately — before the async image decode finishes.
+`_load_image()` calls `_refresh_detail_panel()` first (3 synchronous DB queries), then shows a "Loading…" scene, disables nav buttons, and submits a `_ImageLoadRunnable` to the global `QThreadPool`. The runnable creates a `QImage(path)` on the worker thread (`QImage` is thread-safe; `QPixmap` is not). On `_ImageLoadSignals.loaded(img, path)`, the GUI thread checks `path != self.image_path` (stale guard for rapid navigation), checks `img.isNull()` (decode failure → "Failed to load image" text), then calls `QPixmap.fromImage(img)` and builds the scene. If `_detail_dims` or `_detail_filesize` still show `"—"` (DB had nulls), they are updated from the decoded pixmap and `os.path.getsize`. `self._load_signals` is created once in `__init__` and reused across all navigations.
+
+**Detail panel** (right side `_detail_scroll`): shows filename (bold), full path (dim), separator, metadata grid (Dimensions / File size / Added / Modified with `"—"` placeholders), separator, Albums section (`db.get_albums_for_image`), separator, Tags section (rating:* tags in amber `#f5a623`, general tags in blue-gray `#b4c7d9`, hidden rating label when no rating tag). Module-level `_make_separator()` creates styled HLine frames. Grid column 0 has `setColumnMinimumWidth(0, 70)`.
+
+**Detail panel refresh is split into 3 granular methods** to avoid unnecessary DB queries on triage hotkeys:
+- `_refresh_detail_panel()` — full rebuild; called on `_load_image()` (navigation)
+- `_refresh_metadata_section()` — filename, path, dims (DB), filesize, dates via `db.get_image()`
+- `_refresh_albums_section()` — `db.get_albums_for_image()` → `_detail_albums` label
+- `_refresh_tags_section()` — `db.get_tags_for_images()` → rating + general tag labels
+
+`TriageImageViewer._triage_star()` and `_apply_triage_tag()` call `_refresh_tags_section()` only (fast). `_apply_triage_album()` calls `_refresh_albums_section()` (updates albums panel immediately after adding). `_load_image()` calls full `_refresh_detail_panel()`.
 
 **Nav button boundary state:** `_update_nav_buttons()` disables Prev when `_current_index == 0` and Next when `_current_index == len(_all_images) - 1`. `_navigate(delta)` uses a bounds guard (early return) instead of modulo wrap — keyboard arrows at the boundary do nothing. `_set_nav_enabled(True)` calls `_update_nav_buttons()` so boundary state is always correct after async decode completes.
 
@@ -189,12 +199,12 @@ Move and copy run on `FileOpWorker(QThread)` — the GUI thread never blocks. Bo
 
 ### Triage Mode
 `TriageImageViewer(ImageViewer)` — subclass launched via **View → Triage Mode… (Ctrl+K)** or "Triage from here…" in the gallery context menu. Single-key actions via `QShortcut(WindowShortcut)` (bypasses `ZoomableGraphicsView` focus):
-- **S** — adds `star` tag via `db.add_tags_to_image_batch`, refreshes tag strip
-- **T** — opens floating tag-input overlay (`QFrame` + `QLineEdit` with `QCompleter`); Enter applies tag, Esc dismisses
-- **A** — opens album picker overlay (`QFrame` + `QListWidget`); double-click or Enter adds image to album, Esc dismisses
+- **S** — adds `star` tag via `db.add_tags_to_image_batch`, calls `_refresh_tags_section()` (lightweight)
+- **T** — opens floating tag-input overlay (`QFrame` + `QLineEdit` with `QCompleter`); Enter applies tag + calls `_refresh_tags_section()`, Esc dismisses
+- **A** — opens album picker overlay (`QFrame` + `QListWidget`); double-click or Enter adds image to album + calls `_refresh_albums_section()`, Esc dismisses
 - **D** — calls `file_ops.delete_image(use_trash=True)`, pops from `_all_images`, auto-advances; when last image deleted, emits all accumulated `image_trashed` signals then calls `accept()`
 
-All overlays disabled S/T/A/D shortcuts while showing (`_set_shortcuts_enabled(False)`). `_dismiss_overlays()` re-enables them and returns focus to `_view`. HUD `QLabel` parented directly to dialog, positioned at bottom via `resizeEvent`/`showEvent`. `_flash_hud(msg)` shows feedback text for 1.5s then resets to the legend.
+All overlays disable S/T/A/D shortcuts while showing (`_set_shortcuts_enabled(False)`). `_dismiss_overlays()` re-enables them and returns focus to `_view`. HUD `QLabel` is **parented to `self._view`** (not the dialog) so its geometry is local to the image pane — `_position_hud()` uses `self._view.width()/height()`. `_on_splitter_moved` is overridden in `TriageImageViewer` to also reposition the HUD when the splitter handle is dragged. Overlays are parented to `self` (dialog) but positioned via `self._view.mapTo(self, QPoint(x, y))` to center them over the image area. `_flash_hud(msg)` shows feedback text for 1.5s then resets to the legend. Plain Python fields (`_triage_hud`, `_trashed_ids`, etc.) are initialized **before** `super().__init__()` to guard against Qt events firing during parent init.
 
 **Batch signal emission:** `image_trashed` signals are collected in `_trashed_ids` and emitted in `closeEvent` (normal close) or immediately before `accept()` (last-image-trashed path), because `accept()` does not trigger `closeEvent` in PyQt6. `MainWindow._on_triage_image_trashed` calls `gallery.remove_image(image_id)` for each.
 
