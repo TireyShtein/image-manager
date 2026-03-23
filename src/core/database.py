@@ -2,11 +2,69 @@ import sqlite3
 import os
 import hashlib
 import json
+import threading
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
 
 
 DB_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'imagemanager.db')
+
+# One cached SQLite connection per thread — created on first use, reused for all
+# subsequent calls on that thread, eliminating per-call connect + PRAGMA overhead.
+_local = threading.local()
+
+
+def _create_connection() -> sqlite3.Connection:
+    """Create and fully configure a new SQLite connection.
+    Separated so a PRAGMA failure never caches a half-configured connection."""
+    os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
+    conn = sqlite3.connect(os.path.abspath(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    return conn
+
+
+@contextmanager
+def get_connection():
+    """Yield the thread-local cached connection, committing on exit or rolling
+    back on any exception.  The with-statement calling convention is unchanged:
+        with get_connection() as conn: ...
+    """
+    conn = getattr(_local, 'conn', None)
+    if conn is None:
+        conn = _create_connection()
+        _local.conn = conn
+    try:
+        yield conn
+        conn.commit()
+    except BaseException:
+        try:
+            conn.rollback()
+        except Exception:
+            # rollback failed — connection is in an unknown state; drop it
+            try:
+                conn.close()
+            except Exception:
+                pass
+            _local.conn = None
+        raise
+
+
+def close_connection():
+    """Close the thread-local connection and clear it from the cache.
+    Call this in a finally block at the end of every short-lived QThread.run()
+    to avoid leaking file handles.  Do NOT call from QThreadPool workers
+    (ThumbnailLoader, FolderLoaderRunnable) — pool threads are reused and the
+    cached connection should persist across tasks."""
+    conn = getattr(_local, 'conn', None)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        _local.conn = None
 
 
 def compute_content_hash(filepath: str) -> str | None:
@@ -24,18 +82,10 @@ def db_exists() -> bool:
     return os.path.isfile(os.path.abspath(DB_PATH))
 
 
-def get_connection() -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
-    conn = sqlite3.connect(os.path.abspath(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA busy_timeout = 5000")
-    return conn
-
-
 def init_db():
     with get_connection() as conn:
+        # WAL is persistent in the DB file header — set once here, not per-connection.
+        conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS images (
                 id INTEGER PRIMARY KEY,
@@ -356,10 +406,10 @@ def get_or_create_images_batch(paths: list[str]) -> tuple[list, int]:
 def cleanup_stale_images() -> int:
     rows = get_all_image_paths()
     stale_ids = [img_id for img_id, path in rows if not os.path.isfile(path)]
-    if stale_ids:
-        with get_connection() as conn:
-            conn.executemany("DELETE FROM images WHERE id = ?", [(i,) for i in stale_ids])
+    # Both DELETEs in one transaction — image removal and orphan-tag cleanup are atomic.
     with get_connection() as conn:
+        if stale_ids:
+            conn.executemany("DELETE FROM images WHERE id = ?", [(i,) for i in stale_ids])
         conn.execute(
             "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM image_tags)"
         )

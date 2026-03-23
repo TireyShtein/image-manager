@@ -32,10 +32,13 @@ class ScanWorker(QThread):
         self._folder = folder
 
     def run(self):
-        def cb(current, total):
-            self.progress.emit(current, total)
-        added = image_scanner.scan_folder(self._folder, cb)
-        self.finished_scan.emit(added)
+        try:
+            def cb(current, total):
+                self.progress.emit(current, total)
+            added = image_scanner.scan_folder(self._folder, cb)
+            self.finished_scan.emit(added)
+        finally:
+            db.close_connection()
 
 
 class FileOpWorker(QThread):
@@ -51,21 +54,24 @@ class FileOpWorker(QThread):
         self._dest = dest
 
     def run(self):
-        errors, success = [], 0
-        total = len(self._image_ids)
-        for i, image_id in enumerate(self._image_ids):
-            try:
-                if self._op == "move":
-                    file_ops.move_image(image_id, self._dest)
-                else:
-                    file_ops.copy_image(image_id, self._dest)
-                success += 1
-                self.item_done.emit(image_id)
-            except Exception as e:
-                errors.append(str(e))
-                self.item_error.emit(image_id, str(e))
-            self.progress.emit(i + 1, total)
-        self.finished_op.emit(success, errors)
+        try:
+            errors, success = [], 0
+            total = len(self._image_ids)
+            for i, image_id in enumerate(self._image_ids):
+                try:
+                    if self._op == "move":
+                        file_ops.move_image(image_id, self._dest)
+                    else:
+                        file_ops.copy_image(image_id, self._dest)
+                    success += 1
+                    self.item_done.emit(image_id)
+                except Exception as e:
+                    errors.append(str(e))
+                    self.item_error.emit(image_id, str(e))
+                self.progress.emit(i + 1, total)
+            self.finished_op.emit(success, errors)
+        finally:
+            db.close_connection()
 
 
 class MainWindow(QMainWindow):

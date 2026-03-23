@@ -19,29 +19,32 @@ class WD14Worker(QThread):
         self._cancelled = True
 
     def run(self):
-        total = len(self.image_ids)
-        image_map = db.get_images_batch(self.image_ids)
-        already_rated = db.get_image_ids_with_rating_tag(self.image_ids)
-        tagged, skipped, errors = 0, 0, 0
-        for i, image_id in enumerate(self.image_ids):
-            if self._cancelled:
-                break
-            self.progress.emit(i, total)
-            if image_id in already_rated:
-                skipped += 1
-                continue
-            row = image_map.get(image_id)
-            if not row:
-                continue
-            try:
-                tags = wd14_tagger.classify(row["path"])
-                db.add_tags_to_image_batch(image_id, [tag for tag, conf in tags])
-                if tags:
-                    db.save_ai_result(image_id, "wd14", tags[0][0], tags[0][1])
-                tagged += 1
-                self.image_done.emit(image_id, os.path.basename(row["path"]), tags)
-            except Exception as e:
-                errors += 1
-                self.error.emit(image_id, str(e))
-        self.progress.emit(total, total)
-        self.finished_all.emit(tagged, skipped, errors)
+        try:
+            total = len(self.image_ids)
+            image_map = db.get_images_batch(self.image_ids)
+            already_rated = db.get_image_ids_with_rating_tag(self.image_ids)
+            tagged, skipped, errors = 0, 0, 0
+            for i, image_id in enumerate(self.image_ids):
+                if self._cancelled:
+                    break
+                self.progress.emit(i, total)
+                if image_id in already_rated:
+                    skipped += 1
+                    continue
+                row = image_map.get(image_id)
+                if not row:
+                    continue
+                try:
+                    tags = wd14_tagger.classify(row["path"])
+                    db.add_tags_to_image_batch(image_id, [tag for tag, conf in tags])
+                    if tags:
+                        db.save_ai_result(image_id, "wd14", tags[0][0], tags[0][1])
+                    tagged += 1
+                    self.image_done.emit(image_id, os.path.basename(row["path"]), tags)
+                except Exception as e:
+                    errors += 1
+                    self.error.emit(image_id, str(e))
+            self.progress.emit(total, total)
+            self.finished_all.emit(tagged, skipped, errors)
+        finally:
+            db.close_connection()

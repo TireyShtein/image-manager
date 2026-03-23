@@ -59,7 +59,11 @@ AI Layer (src/ai/)
 - All cross-thread communication uses `pyqtSignal`
 
 ### Database
-SQLite with WAL journal mode, foreign keys enabled, and `PRAGMA busy_timeout = 5000` (prevents "database is locked" errors when background threads — `FolderLoaderRunnable`, `FileOpWorker` — write concurrently). Tables: `images`, `tags`, `image_tags`, `albums`, `album_images`, `ai_results`, `saved_filters`. All access goes through `src/core/database.py`. Connection opened per-call via `get_connection()` (context manager, Row factory).
+SQLite with WAL journal mode, foreign keys enabled, and `PRAGMA busy_timeout = 5000`. All access goes through `src/core/database.py`. Tables: `images`, `tags`, `image_tags`, `albums`, `album_images`, `ai_results`, `saved_filters`.
+
+**Connection model — thread-local pool:** `get_connection()` is a `@contextmanager` backed by `threading.local()`. Each thread gets one `sqlite3.Connection` created on first use (`_create_connection()`) and reused for all subsequent calls — eliminating per-call `sqlite3.connect()` + PRAGMA overhead. `get_connection()` commits on normal exit, rolls back (and invalidates the cached connection if rollback fails) on any exception. The calling convention `with get_connection() as conn:` is unchanged across all 40 DB functions.
+
+`_create_connection()` is a private helper that configures the connection (`foreign_keys`, `busy_timeout`) before caching it — ensuring a PRAGMA failure never stores a half-configured connection. `PRAGMA journal_mode = WAL` is set once in `init_db()` only (WAL is persistent in the DB file header; re-setting per-connection was a no-op overhead). `close_connection()` explicitly closes and evicts the thread-local connection — called in a `finally` block at the end of every short-lived QThread `run()` (`ScanWorker`, `FileOpWorker`, `WD14Worker`, `RatingSortWorker`) to avoid leaking file handles. QThreadPool workers (`ThumbnailLoader`, `FolderLoaderRunnable`, `_ImageLoadRunnable`) do NOT call `close_connection()` — pool threads are reused and their cached connection persists across tasks intentionally.
 
 The `saved_filters` table stores named tag filter presets: `id, name TEXT UNIQUE, tags TEXT (JSON array), mode TEXT ("AND"|"OR"), created_at TEXT`. Functions: `create_saved_filter(name, tags, mode)`, `get_all_saved_filters()`, `get_saved_filter(id)`, `delete_saved_filter(id)`, `rename_saved_filter(id, new_name)`. `create_saved_filter` raises `sqlite3.IntegrityError` on duplicate name (caller handles).
 

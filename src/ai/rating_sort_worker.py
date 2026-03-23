@@ -22,34 +22,37 @@ class RatingSortWorker(QThread):
         self._cancelled = True
 
     def run(self):
-        rows = db.get_images_with_ratings_in_folder(self.folder)
-        total = len(rows)
-        sfw_count = nsfw_count = skipped_count = 0
+        try:
+            rows = db.get_images_with_ratings_in_folder(self.folder)
+            total = len(rows)
+            sfw_count = nsfw_count = skipped_count = 0
 
-        for i, row in enumerate(rows):
-            if self._cancelled:
-                break
-            self.progress.emit(i, total)
-            image_id = row["id"]
-            rating = row["rating"]
+            for i, row in enumerate(rows):
+                if self._cancelled:
+                    break
+                self.progress.emit(i, total)
+                image_id = row["id"]
+                rating = row["rating"]
 
-            if rating in self.NSFW_RATINGS:
-                dest_folder = self.nsfw_folder
-            elif rating in self.SFW_RATINGS:
-                dest_folder = self.sfw_folder
-            else:
-                skipped_count += 1
-                continue
-
-            try:
-                dest = file_ops.move_image(image_id, dest_folder)
-                if dest_folder == self.sfw_folder:
-                    sfw_count += 1
+                if rating in self.NSFW_RATINGS:
+                    dest_folder = self.nsfw_folder
+                elif rating in self.SFW_RATINGS:
+                    dest_folder = self.sfw_folder
                 else:
-                    nsfw_count += 1
-                self.image_done.emit(image_id, dest)
-            except Exception as e:
-                self.error.emit(image_id, str(e))
+                    skipped_count += 1
+                    continue
 
-        self.progress.emit(total, total)
-        self.finished_all.emit(sfw_count, nsfw_count, skipped_count)
+                try:
+                    dest = file_ops.move_image(image_id, dest_folder)
+                    if dest_folder == self.sfw_folder:
+                        sfw_count += 1
+                    else:
+                        nsfw_count += 1
+                    self.image_done.emit(image_id, dest)
+                except Exception as e:
+                    self.error.emit(image_id, str(e))
+
+            self.progress.emit(total, total)
+            self.finished_all.emit(sfw_count, nsfw_count, skipped_count)
+        finally:
+            db.close_connection()
