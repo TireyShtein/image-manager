@@ -1,9 +1,10 @@
 import os
-from PyQt6.QtWidgets import QListView, QAbstractItemView, QStyle, QFrame, QLabel, QVBoxLayout, QApplication
-from PyQt6.QtCore import (Qt, QAbstractListModel, QModelIndex, QSize, QRect,
+from PyQt6.QtWidgets import (QListView, QAbstractItemView, QStyle, QFrame, QLabel,
+                             QVBoxLayout, QApplication, QWidget, QPushButton)
+from PyQt6.QtCore import (Qt, QAbstractListModel, QModelIndex, QSize,
                            QRunnable, QThreadPool, pyqtSignal, QObject, pyqtSlot,
                            QTimer, QPoint, QEvent)
-from PyQt6.QtGui import QPixmap, QPainter, QFont, QColor, QPen
+from PyQt6.QtGui import QPixmap, QPainter, QColor, QPen
 from src.core import thumbnail_cache, database as db
 from typing import NamedTuple
 
@@ -59,6 +60,146 @@ def _get_placeholder(size: int) -> QPixmap:
         pix.fill(QColor(220, 220, 220))
         _placeholder_cache[size] = pix
     return _placeholder_cache[size]
+
+_CARD_STYLE_IDLE = (
+    "#emptyCard { background: #1c1c1c; border: 1px dashed rgba(255,255,255,0.14);"
+    " border-radius: 10px; }"
+)
+_CARD_STYLE_DRAG = (
+    "#emptyCard { background: #252525; border: 2px solid rgba(220,220,220,0.90);"
+    " border-radius: 10px; }"
+)
+
+
+class _EmptyStateOverlay(QWidget):
+    """Actionable empty-state card shown when the gallery has no images."""
+
+    def __init__(self, parent):  # parent is GalleryView
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setAcceptDrops(True)
+        self._last_recent_paths: list = []
+
+        outer = QVBoxLayout(self)
+        outer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        outer.setSpacing(0)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        card = QFrame()
+        card.setObjectName("emptyCard")
+        card.setMaximumWidth(360)
+        card.setStyleSheet(_CARD_STYLE_IDLE)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(32, 28, 32, 28)
+        card_layout.setSpacing(8)
+        card_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        icon_label = QLabel()
+        icon = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+        icon_label.setPixmap(icon.pixmap(40, 40))
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        heading = QLabel("Open a folder to get started")
+        heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        heading.setStyleSheet("color: #e8e8e8; font-size: 15px; font-weight: 600;")
+
+        open_btn = QPushButton("  Open Folder\u2026")
+        open_btn.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
+        open_btn.setStyleSheet(
+            "QPushButton { background: #2e2e2e; color: #e8e8e8;"
+            " border: 1px solid rgba(255,255,255,0.22); border-radius: 6px;"
+            " padding: 7px 20px; font-size: 13px; }"
+            "QPushButton:hover { background: #383838; }"
+            "QPushButton:pressed { background: #212121; }"
+        )
+        open_btn.clicked.connect(lambda: parent.open_folder_requested.emit())
+
+        drag_hint = QLabel("or drag a folder here")
+        drag_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        drag_hint.setStyleSheet("color: #7a7a7a; font-size: 11px;")
+
+        card_layout.addWidget(icon_label)
+        card_layout.addSpacing(4)
+        card_layout.addWidget(heading)
+        card_layout.addSpacing(6)
+        card_layout.addWidget(open_btn, 0, Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(drag_hint)
+
+        # Recent folders section — hidden until there are valid entries
+        self._recent_section = QWidget()
+        recent_layout = QVBoxLayout(self._recent_section)
+        recent_layout.setContentsMargins(0, 4, 0, 0)
+        recent_layout.setSpacing(2)
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.HLine)
+        divider.setStyleSheet("color: rgba(255,255,255,0.09);")
+        recent_layout.addWidget(divider)
+        recent_header = QLabel("Recent Folders")
+        recent_header.setStyleSheet("color: #767676; font-size: 11px; font-weight: 500;"
+                                    " margin-top: 4px;")
+        recent_layout.addWidget(recent_header)
+        self._recent_buttons_layout = QVBoxLayout()
+        self._recent_buttons_layout.setSpacing(1)
+        recent_layout.addLayout(self._recent_buttons_layout)
+        self._recent_section.hide()
+        card_layout.addWidget(self._recent_section)
+
+        outer.addWidget(card)
+        self._card = card
+
+    def set_recent_folders(self, paths: list):
+        if paths == self._last_recent_paths:
+            return
+        self._last_recent_paths = list(paths)
+        while self._recent_buttons_layout.count():
+            item = self._recent_buttons_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        valid = [p for p in paths if os.path.isdir(p)]
+        for path in valid[:5]:
+            parent_name = os.path.basename(os.path.dirname(path))
+            label = f"{parent_name}/{os.path.basename(path)}" if parent_name else os.path.basename(path)
+            btn = QPushButton(label)
+            btn.setToolTip(path)
+            btn.setStyleSheet(
+                "QPushButton { background: transparent; color: #9a9a9a; border: none;"
+                " font-size: 11px; text-align: left; padding: 2px 4px; }"
+                "QPushButton:hover { color: #d4d4d4; text-decoration: underline; }"
+            )
+            btn.clicked.connect(lambda _checked, p=path: self.parent().recent_folder_requested.emit(p))
+            self._recent_buttons_layout.addWidget(btn)
+        self._recent_section.setVisible(bool(valid))
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                if os.path.isdir(url.toLocalFile()):
+                    self._card.setStyleSheet(_CARD_STYLE_DRAG)
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls() and any(
+            os.path.isdir(url.toLocalFile()) for url in event.mimeData().urls()
+        ):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self._card.setStyleSheet(_CARD_STYLE_IDLE)
+
+    def dropEvent(self, event):
+        self._card.setStyleSheet(_CARD_STYLE_IDLE)
+        for url in event.mimeData().urls():
+            path = url.toLocalFile()
+            if os.path.isdir(path):
+                self.parent().folder_dropped.emit(path)
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
 
 class LoadResult(NamedTuple):
     shown: int
@@ -373,12 +514,13 @@ class GalleryView(QListView):
     thumbnails_ready = pyqtSignal(int)          # total count
     page_changed = pyqtSignal(int, int, int)    # (page, page_count, total)
     tags_recovered = pyqtSignal(int)            # recovered_count (> 0 only)
+    open_folder_requested = pyqtSignal()
+    recent_folder_requested = pyqtSignal(str)
+    folder_dropped = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._gallery_model = GalleryModel(self)
-        self._empty_text = "No media in this folder"
-        self._empty_hint: str | None = None  # override for secondary hint text
         self._loading = False
         self._density: str = "comfortable"
         self._excluded_rating_tags: list[str] = []
@@ -426,24 +568,30 @@ class GalleryView(QListView):
 
         # Hover metadata card
         self._hover_card = QFrame(None, Qt.WindowType.ToolTip)
+        self._hover_card.setMaximumWidth(300)
         self._hover_card.setStyleSheet(
-            "QFrame { background: #1e1e2e; border: 1px solid rgba(255,255,255,0.15);"
-            " border-radius: 6px; }"
-            "QLabel { color: #e0e0f0; background: transparent; border: none; }"
+            "QFrame { background: #1c1c1c; border: 1px solid rgba(255,255,255,0.18);"
+            " border-radius: 8px; }"
+            "QLabel { color: #e8e8e8; background: transparent; border: none; }"
         )
         _card_layout = QVBoxLayout(self._hover_card)
-        _card_layout.setContentsMargins(8, 6, 8, 6)
-        _card_layout.setSpacing(3)
+        _card_layout.setContentsMargins(10, 8, 10, 8)
+        _card_layout.setSpacing(5)
         self._hover_name_label = QLabel()
-        self._hover_name_label.setStyleSheet("font-weight: bold; font-size: 12px;")
+        self._hover_name_label.setStyleSheet("font-weight: 600; font-size: 13px;")
         self._hover_size_label = QLabel()
-        self._hover_size_label.setStyleSheet("color: #888; font-size: 11px;")
+        self._hover_size_label.setStyleSheet("color: #9a9a9a; font-size: 11px;")
+        self._hover_tags_section_label = QLabel("TAGS")
+        self._hover_tags_section_label.setStyleSheet(
+            "color: #767676; font-size: 10px; font-weight: 500; letter-spacing: 0.04em;"
+        )
         self._hover_tags_label = QLabel()
         self._hover_tags_label.setWordWrap(True)
-        self._hover_tags_label.setMaximumWidth(280)
-        self._hover_tags_label.setStyleSheet("font-size: 11px;")
+        self._hover_tags_label.setStyleSheet("font-size: 11px; color: #b8b8b8;")
         _card_layout.addWidget(self._hover_name_label)
         _card_layout.addWidget(self._hover_size_label)
+        _card_layout.addSpacing(3)
+        _card_layout.addWidget(self._hover_tags_section_label)
         _card_layout.addWidget(self._hover_tags_label)
         self._hover_card.hide()
 
@@ -457,6 +605,11 @@ class GalleryView(QListView):
         self.viewport().setMouseTracking(True)
         self.viewport().installEventFilter(self)
         self.verticalScrollBar().valueChanged.connect(self._hide_hover_card)
+
+        # Empty-state overlay
+        self._empty_overlay = _EmptyStateOverlay(self)
+        self._empty_overlay.setGeometry(self.viewport().rect())
+        self._empty_overlay.hide()
 
     def eventFilter(self, obj, event):
         if obj is self.viewport():
@@ -488,7 +641,10 @@ class GalleryView(QListView):
         if item is None:
             return
         path = item["path"]
-        self._hover_name_label.setText(os.path.basename(path))
+        basename = os.path.basename(path)
+        fm = self._hover_name_label.fontMetrics()
+        self._hover_name_label.setText(fm.elidedText(basename, Qt.TextElideMode.ElideMiddle, 260))
+        self._hover_name_label.setToolTip(basename)
         try:
             size_bytes = os.path.getsize(path)
             if size_bytes >= 1_048_576:
@@ -502,9 +658,11 @@ class GalleryView(QListView):
         self._hover_size_label.setText(size_str)
         tag_rows = db.get_tags_for_images([item["id"]])
         if tag_rows:
-            self._hover_tags_label.setText("  ·  ".join(r[0] for r in tag_rows))
+            self._hover_tags_label.setText(" · ".join(r[0] for r in tag_rows))
+            self._hover_tags_section_label.show()
             self._hover_tags_label.show()
         else:
+            self._hover_tags_section_label.hide()
             self._hover_tags_label.hide()
         self._hover_card.adjustSize()
         self._position_hover_card()
@@ -545,11 +703,13 @@ class GalleryView(QListView):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._on_scroll()
+        self._empty_overlay.setGeometry(self.viewport().rect())
 
     def _on_all_loaded(self):
         self._loading = False
         self.viewport().update()
         self.thumbnails_ready.emit(self._gallery_model.count())
+        self._update_overlay_visibility()
 
     def _on_selection_changed(self, selected, deselected):
         self.selection_changed.emit(self.get_selected_ids())
@@ -621,6 +781,17 @@ class GalleryView(QListView):
         """Show 'folder/filename' labels instead of just filenames."""
         self._gallery_model.set_show_folder_origin(show)
 
+    def set_recent_folders(self, paths: list):
+        """Pass a list of recently opened folder paths to the empty-state overlay."""
+        self._empty_overlay.set_recent_folders(paths)
+
+    def _update_overlay_visibility(self):
+        show = self._gallery_model.rowCount() == 0 and not self._loading
+        self._empty_overlay.setGeometry(self.viewport().rect())
+        self._empty_overlay.setVisible(show)
+        if show:
+            self._empty_overlay.raise_()
+
     def set_rating_filter(self, excluded: list[str]):
         """Set which rating tags to hide. Pass [] to show everything."""
         self._excluded_rating_tags = excluded
@@ -633,9 +804,8 @@ class GalleryView(QListView):
         return [r for r in rows if r["id"] in allowed_ids]
 
     def load_folder(self, folder: str):
-        self._empty_text = "No media in this folder"
-        self._empty_hint = None
         self._loading = True
+        self._empty_overlay.hide()
         self._gallery_model.set_show_folder_origin(False)
         self._load_token += 1
         token = self._load_token
@@ -652,11 +822,7 @@ class GalleryView(QListView):
         if recovered > 0:
             self.tags_recovered.emit(recovered)
 
-    def load_images(self, rows, empty_text: str = "No images match this filter",
-                    empty_hint: str | None = None,
-                    show_folder_origin: bool = False) -> LoadResult:
-        self._empty_text = empty_text
-        self._empty_hint = empty_hint
+    def load_images(self, rows, show_folder_origin: bool = False) -> LoadResult:
         self._gallery_model.set_show_folder_origin(show_folder_origin)
         valid_rows = [r for r in rows if os.path.isfile(r["path"])]
         filtered = self._apply_rating_filter(valid_rows)
@@ -664,6 +830,7 @@ class GalleryView(QListView):
         sfw_hidden = len(valid_rows) - len(filtered)
         missing = len(rows) - len(valid_rows)
         self._load_rows(filtered)
+        self._update_overlay_visibility()
         return LoadResult(shown, sfw_hidden, missing)
 
     def load_paths(self, paths: list[str]):
@@ -671,6 +838,7 @@ class GalleryView(QListView):
         valid = [p for p in paths if os.path.isfile(p)]
         rows, _recovered = db.get_or_create_images_batch(valid)
         self._load_rows(rows)
+        self._update_overlay_visibility()
 
     def _on_double_click(self, index: QModelIndex):
         self._hide_hover_card()
@@ -696,36 +864,6 @@ class GalleryView(QListView):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        if self._gallery_model.rowCount() == 0 and not self._loading:
-            painter = QPainter(self.viewport())
-            rect = self.viewport().rect()
-            cx, cy = rect.center().x(), rect.center().y()
-
-            # Folder icon centered above text
-            icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
-            icon_size = 48
-            icon.paint(painter, QRect(cx - icon_size // 2, cy - icon_size - 28, icon_size, icon_size))
-
-            # Primary text
-            font = painter.font()
-            font.setPointSize(13)
-            font.setWeight(QFont.Weight.Medium)
-            painter.setFont(font)
-            painter.setPen(QColor("#444444"))
-            painter.drawText(QRect(rect.x(), cy - 8, rect.width(), 28),
-                             Qt.AlignmentFlag.AlignHCenter, self._empty_text)
-
-            # Secondary hint
-            font.setPointSize(10)
-            font.setWeight(QFont.Weight.Normal)
-            painter.setFont(font)
-            painter.setPen(QColor("#888888"))
-            if self._empty_hint is not None:
-                hint = self._empty_hint
-            else:
-                hint = "Open a folder via File > Open Folder"
-            painter.drawText(QRect(rect.x(), cy + 24, rect.width(), 22),
-                             Qt.AlignmentFlag.AlignHCenter, hint)
 
     def image_count(self) -> int:
         return self._gallery_model.count()
@@ -747,9 +885,16 @@ class GalleryView(QListView):
                 self._pager.page_count,
                 self._pager.total,
             )
+            if self._pager.total == 0:
+                self._update_overlay_visibility()
+            elif self._gallery_model.rowCount() == 0:
+                # Current page emptied but pager has items on other pages — go to last valid page
+                self._show_page(min(self._pager.current_page, self._pager.page_count - 1))
         else:
             self._gallery_model.remove_image(image_id)
             self._refresh_size()
+            if self._gallery_model.rowCount() == 0:
+                self._update_overlay_visibility()
 
     def mark_image_error(self, image_id: int):
         """Mark a thumbnail with a red error overlay (failed file operation)."""

@@ -104,6 +104,10 @@ class MainWindow(QMainWindow):
         self._tag_refresh_timer.timeout.connect(self._tag_panel.refresh)
 
         self._gallery.set_density(self._settings.value("density", "comfortable"))
+        _recent = self._settings.value("recent_folders", [])
+        if not isinstance(_recent, list):
+            _recent = [_recent] if isinstance(_recent, str) and _recent else []
+        self._gallery.set_recent_folders(_recent)
         self._restore_last_folder()
         self._tag_panel.refresh()
 
@@ -166,6 +170,9 @@ class MainWindow(QMainWindow):
         self._gallery.empty_context_menu_requested.connect(self._on_empty_gallery_context_menu)
         self._gallery.page_changed.connect(self._on_page_changed)
         self._gallery.tags_recovered.connect(self._on_tags_recovered)
+        self._gallery.open_folder_requested.connect(self._open_folder)
+        self._gallery.recent_folder_requested.connect(self._open_recent_folder)
+        self._gallery.folder_dropped.connect(self._open_recent_folder)
         gallery_layout.addWidget(self._gallery, 1)
 
         # Pagination bar
@@ -422,6 +429,7 @@ class MainWindow(QMainWindow):
             self._gallery.load_folder(folder)
             self._status_label.setText(self._status_prefix)
             self._update_go_up_button()
+            self._add_recent_folder(folder)
 
     def _open_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Open Folder")
@@ -435,6 +443,7 @@ class MainWindow(QMainWindow):
             self._folder_tree.set_root(folder)
             self._status_label.setText(self._status_prefix)
             self._settings.setValue("last_folder", folder)
+            self._add_recent_folder(folder)
             self._tag_panel.clear_search()
             self._update_filter_chips([])
             self._update_go_up_button()
@@ -454,6 +463,7 @@ class MainWindow(QMainWindow):
         self._gallery.load_folder(parent)
         self._status_label.setText(self._status_prefix)
         self._settings.setValue("last_folder", parent)
+        self._add_recent_folder(parent)
         self._tag_panel.clear_search()
         self._update_filter_chips([])
         self._update_go_up_button()
@@ -464,6 +474,36 @@ class MainWindow(QMainWindow):
             self._btn_go_up.setEnabled(bool(parent) and parent != self._current_folder)
         else:
             self._btn_go_up.setEnabled(False)
+
+    def _add_recent_folder(self, path: str):
+        val = self._settings.value("recent_folders", [])
+        if not isinstance(val, list):
+            val = [val] if isinstance(val, str) and val else []
+        recent = [p for p in val if p != path]
+        recent.insert(0, path)
+        # Prune stale entries (deleted/unmounted paths) and cap at 5
+        recent = [p for p in recent if os.path.isdir(p)][:5]
+        self._settings.setValue("recent_folders", recent)
+        self._gallery.set_recent_folders(recent)
+
+    def _open_recent_folder(self, path: str):
+        if not os.path.isdir(path):
+            QMessageBox.warning(self, "Folder Not Found",
+                                f"The folder no longer exists:\n{path}")
+            return
+        self._current_folder = path
+        self._active_tag_filter = []
+        self._active_album_id = None
+        self._status_prefix = f"Folder: {os.path.basename(path)}"
+        self._status_label.setToolTip(path)
+        self._folder_tree.set_root(path)
+        self._gallery.load_folder(path)
+        self._status_label.setText(self._status_prefix)
+        self._settings.setValue("last_folder", path)
+        self._add_recent_folder(path)
+        self._tag_panel.clear_search()
+        self._update_filter_chips([])
+        self._update_go_up_button()
 
     def _cleanup_library(self):
         removed = db.cleanup_stale_images()
@@ -508,6 +548,7 @@ class MainWindow(QMainWindow):
         self._gallery.load_folder(folder)
         self._status_label.setText(self._status_prefix)
         self._settings.setValue("last_folder", folder)
+        self._add_recent_folder(folder)
         self._tag_panel.clear_search()
         self._update_filter_chips([])
         self._update_go_up_button()
@@ -531,6 +572,7 @@ class MainWindow(QMainWindow):
         self._gallery.load_folder(parent_dir)
         self._status_label.setText(self._status_prefix)
         self._settings.setValue("last_folder", parent_dir)
+        self._add_recent_folder(parent_dir)
         self._tag_panel.clear_search()
         self._update_filter_chips([])
         self._update_go_up_button()
@@ -604,12 +646,7 @@ class MainWindow(QMainWindow):
             connector = f" {mode} "
             label = (connector.join(tag_names) if len(tag_names) <= 2
                      else f"{tag_names[0]} {mode} +{len(tag_names) - 1} more")
-            loaded_images = self._gallery.load_images(
-                rows,
-                empty_text="No images match the tag filter",
-                empty_hint="Try switching to OR mode in the tag panel, or clear the filter",
-                show_folder_origin=True,
-            )
+            loaded_images = self._gallery.load_images(rows, show_folder_origin=True)
             parts = []
             if loaded_images.sfw_hidden > 0:
                 parts.append(f"{loaded_images.sfw_hidden} hidden by SFW Mode")
@@ -660,7 +697,7 @@ class MainWindow(QMainWindow):
         self._active_tag_filter = []
         rows = db.get_images_in_album(album_id)
         album = db.get_album(album_id)
-        loaded_images = self._gallery.load_images(rows, empty_text=f"No images in album '{album['name']}' found on disk")
+        loaded_images = self._gallery.load_images(rows)
         parts = []
         if loaded_images.sfw_hidden > 0:
             parts.append(f"{loaded_images.sfw_hidden} hidden by SFW Mode")
