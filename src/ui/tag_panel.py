@@ -44,6 +44,7 @@ class TagPanel(QWidget):
         self._sort_by_count: bool = True   # True=count desc, False=alpha
         self._filter_mode: str = "AND"
         self._sfw_mode: bool = False
+        self._cached_tag_rows: list = []   # populated by _refresh_tag_cache(); reused by _refresh_global_list()
         self._setup_ui()
 
     def _setup_ui(self):
@@ -215,8 +216,14 @@ class TagPanel(QWidget):
         self._btn_remove.setEnabled(False)
         self._refresh_selected_tags()
 
+    def _refresh_tag_cache(self):
+        """Fetch all tags from DB and update autocomplete. Call when the tag list may have changed."""
+        self._cached_tag_rows = db.get_all_tags_with_counts()
+        self._completer_model.setStringList([r["name"] for r in self._cached_tag_rows])
+
     def refresh(self):
         """Full refresh — rebuilds both the global tag list and the selected image tags."""
+        self._refresh_tag_cache()
         self._refresh_global_list()
         self._refresh_selected_tags()
 
@@ -227,9 +234,11 @@ class TagPanel(QWidget):
         self._global_list.blockSignals(True)
         self._global_list.clear()
 
-        all_rows = db.get_all_tags_with_counts()
-        self._completer_model.setStringList([r["name"] for r in all_rows])
-        rows = db.search_tags_with_counts(query) if query else all_rows
+        q = query.lower()
+        rows = (
+            [r for r in self._cached_tag_rows if q in r["name"].lower()]
+            if q else self._cached_tag_rows
+        )
 
         if self._sort_by_count:
             rows = sorted(rows, key=lambda r: r["count"], reverse=True)
@@ -388,7 +397,7 @@ class TagPanel(QWidget):
 
     def _delete_global_tag(self, tag_name: str):
         count = next(
-            (r["count"] for r in db.get_all_tags_with_counts() if r["name"] == tag_name), 0
+            (r["count"] for r in self._cached_tag_rows if r["name"] == tag_name), 0
         )
         reply = QMessageBox.question(
             self, "Delete Tag",

@@ -135,7 +135,7 @@ Three new signals on `GalleryView`: `open_folder_requested` (Open Folder button)
 `MainWindow._build_ui()` stores the splitter as `self._splitter`, left pane as `self._left_panel`, right pane as `self._right_panel`. Max widths: left 450px, right 400px (raised from 300/280). Center gallery is never collapsible (`setCollapsible(1, False)`); left and right are collapsible via drag. **View menu** has "Show Folder Tree" (Ctrl+1) and "Show Tag Panel" (Ctrl+2) checkable actions that call `_toggle_left_panel`/`_toggle_right_panel`. `_on_splitter_moved` keeps those checkmarks in sync when the user drags a pane to zero. All state saved in `closeEvent` before `super()`.
 
 ### Tag panel
-The tag search bar is **debounced** — `textChanged` connects via `lambda _: self._search_timer.start()` to a 150ms single-shot `QTimer`, so rapid keystrokes (or paste) coalesce into one DB read + list rebuild. The lambda wrapper is required because `QTimer.start` has an `int` overload that PyQt6 would match against the `str` argument from `textChanged`, causing a TypeError.
+The tag search bar is **debounced** — `textChanged` connects via `lambda _: self._search_timer.start()` to a 150ms single-shot `QTimer`, so rapid keystrokes (or paste) coalesce into one list rebuild. The lambda wrapper is required because `QTimer.start` has an `int` overload that PyQt6 would match against the `str` argument from `textChanged`, causing a TypeError.
 
 `TagPanel` has two separate `QListWidget`s:
 - **All Tags** — shows every tag in the DB grouped by category under non-clickable headers. Tags are checkable; checking one emits `tag_filter_changed(list[str], mode)` to filter the gallery. Category color-coding: `rating:*` tags in amber, all others in muted blue-gray. A "Clear filters (N)" ghost button shows the active count and clears all checkboxes.
@@ -151,11 +151,13 @@ The tag search bar is **debounced** — `textChanged` connects via `lambda _: se
 
 **`itemChanged` vs `itemClicked`:** The global list uses `itemChanged` (not `itemClicked`) to detect checkbox toggles. `blockSignals(True/False)` wraps all programmatic item changes in `_refresh_global_list()` and `_on_item_changed` to prevent re-entrant signal loops. `_on_item_changed` also updates the item's foreground color immediately (with a `blockSignals` guard) rather than waiting for the next full refresh.
 
-**Refresh split:** `refresh()` calls both `_refresh_global_list()` and `_refresh_selected_tags()`. On image selection change, only `_refresh_selected_tags()` is called — avoiding a full global list rebuild and 2 unnecessary DB queries on every gallery click. `_refresh_global_list()` is called on search, sort toggle, filter clear, folder nav, and tag add/remove.
+**Refresh split:** `refresh()` calls `_refresh_tag_cache()`, `_refresh_global_list()`, and `_refresh_selected_tags()`. On image selection change, only `_refresh_selected_tags()` is called. On sort/SFW/clear/search, only `_refresh_global_list()` is called (no DB access).
+
+**Tag cache:** `_cached_tag_rows: list` holds the full result of `db.get_all_tags_with_counts()`. `_refresh_tag_cache()` is the only method that calls the DB for tags — it fetches and stores the list, then updates the `QCompleter` model. `_refresh_global_list()` reads exclusively from `_cached_tag_rows` and filters in Python (`q in r["name"].lower()` — equivalent to SQLite `LIKE '%q%'` but also correct for Unicode and literal `%`/`_` characters). `_refresh_tag_cache()` is called only when the tag list could have changed: folder nav (`refresh()`), tag rename, tag delete, tag add/remove. Sort toggles, SFW mode changes, filter clears, and search keystrokes make **0 DB calls**.
 
 **SFW Mode integration:** `TagPanel.set_sfw_mode(enabled)` is called by `MainWindow` when SFW Mode is toggled. When enabled, `rating:explicit` and `rating:questionable` tags render without a checkbox (flags = `ItemIsEnabled` only), in very dim amber, with a `Ø` suffix. Clicking them shows a `QToolTip` via `_on_item_clicked` explaining that SFW Mode is active. If either tag was in `_active_filter_tags` when SFW mode is enabled, it is automatically removed and `tag_filter_changed` is re-emitted. `_SFW_BLOCKED_TAGS = {"rating:explicit", "rating:questionable"}` is defined at module level.
 
-The search bar has `QCompleter` autocomplete backed by a `QStringListModel` sourced from `db.get_all_tags_with_counts()` — DB-only tags, updated on every `_refresh_global_list()`. No WD14 CSV is loaded for autocomplete.
+The search bar has `QCompleter` autocomplete backed by a `QStringListModel` updated in `_refresh_tag_cache()` only (not on every keystroke). No WD14 CSV is loaded for autocomplete.
 
 **Adding tags** is done via the RMB context menu in the gallery: Tags → Add tag… opens a `QInputDialog`. There is no inline add-tag input in the TagPanel itself.
 
@@ -250,5 +252,7 @@ Models are downloaded from HuggingFace on first use and cached in `~/.cache/hugg
 - `db.filter_out_images_with_tags(image_ids, excluded_tags)` — returns subset of IDs with none of the excluded tags (used by SFW Mode)
 - `db.get_image_ids_with_rating_tag(image_ids)` — set of IDs that already have a `rating:*` tag (used by WD14 resumability)
 - `db.get_images_with_ratings_in_folder(folder)` — returns `(id, path, rating)` rows for images directly in a folder (non-recursive); `rating` is the `rating:*` tag or `None` (used by rating sort preview and worker)
+- `db.get_all_tags_with_counts()` — all tags with per-tag image counts via INNER JOIN; used by `TagPanel._refresh_tag_cache()` only (not on search keystrokes)
+- `db.get_all_albums_with_counts()` — all albums with image counts in a single LEFT JOIN GROUP BY query; used by `AlbumPanel._refresh_albums()` and `TriageImageViewer._triage_album_picker()` (replaces N+1 pattern)
 - `db.rename_tag(old_name, new_name)` — `UPDATE tags SET name=?`; raises `sqlite3.IntegrityError` if new name already exists
 - `db.delete_tag(tag_name)` — `DELETE FROM tags WHERE name=?`; cascade removes all `image_tags` rows for that tag
