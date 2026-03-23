@@ -416,6 +416,5 @@ class TagPanel(QWidget):
         if not item or not self._selected_image_ids:
             return
         tag_name = item.data(Qt.ItemDataRole.UserRole)
-        for image_id in self._selected_image_ids:
-            db.remove_tag_from_image(image_id, tag_name)
+        db.remove_tag_from_images_batch(self._selected_image_ids, tag_name)
         self.refresh()

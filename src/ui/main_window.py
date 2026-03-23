@@ -843,8 +843,7 @@ class MainWindow(QMainWindow):
         name = " ".join(name.split())
         if not name:
             return
-        for image_id in image_ids:
-            db.add_tag_to_image(image_id, name)
+        db.add_tag_to_images_batch(image_ids, name)
         self._tag_panel.refresh()
 
     def _view_image(self, image_id: int):

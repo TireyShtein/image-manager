@@ -468,6 +468,40 @@ def add_tags_to_image_batch(image_id: int, tag_names: list[str]):
         )
 
 
+def add_tag_to_images_batch(image_ids: list[int], tag_name: str):
+    """Add one tag to multiple images in a single transaction (avoids N-loop)."""
+    if not image_ids:
+        return
+    with get_connection() as conn:
+        conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag_name,))
+        tag_row = conn.execute("SELECT id FROM tags WHERE name = ?", (tag_name,)).fetchone()
+        if tag_row:
+            conn.executemany(
+                "INSERT OR IGNORE INTO image_tags (image_id, tag_id) VALUES (?, ?)",
+                [(image_id, tag_row["id"]) for image_id in image_ids],
+            )
+
+
+def remove_tag_from_images_batch(image_ids: list[int], tag_name: str):
+    """Remove one tag from multiple images in a single transaction (avoids N-loop)."""
+    if not image_ids:
+        return
+    with get_connection() as conn:
+        tag_row = conn.execute("SELECT id FROM tags WHERE name = ?", (tag_name,)).fetchone()
+        if not tag_row:
+            return
+        tag_id = tag_row["id"]
+        # Chunk to stay under SQLite's 999-variable limit (1 slot used by tag_id)
+        chunk_size = 900
+        for i in range(0, len(image_ids), chunk_size):
+            chunk = image_ids[i:i + chunk_size]
+            placeholders = ",".join("?" * len(chunk))
+            conn.execute(
+                f"DELETE FROM image_tags WHERE tag_id = ? AND image_id IN ({placeholders})",
+                [tag_id, *chunk],
+            )
+
+
 def remove_tag_from_image(image_id: int, tag_name: str):
     with get_connection() as conn:
         row = conn.execute("SELECT id FROM tags WHERE name = ?", (tag_name,)).fetchone()
