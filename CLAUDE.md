@@ -34,6 +34,7 @@ UI Layer (src/ui/)
   GalleryView         — paginated QListView (200 images/page); lazy viewport-driven thumbnail loading via QThreadPool
   TagPanel / AlbumPanel — right sidebar; read/write DB directly, emit filter signals
   ImageViewer         — modal QDialog for full-size view; opens videos via os.startfile()
+  TriageImageViewer   — ImageViewer subclass; adds S/T/A/D shortcuts via QShortcut (WindowShortcut), HUD overlay, floating overlays for tag input / album picker; batches image_trashed(int) signal emissions on close
 
 Core Layer (src/core/)
   database.py         — all SQLite access (functional API, no ORM)
@@ -58,7 +59,9 @@ AI Layer (src/ai/)
 - All cross-thread communication uses `pyqtSignal`
 
 ### Database
-SQLite with WAL journal mode, foreign keys enabled, and `PRAGMA busy_timeout = 5000` (prevents "database is locked" errors when background threads — `FolderLoaderRunnable`, `FileOpWorker` — write concurrently). Tables: `images`, `tags`, `image_tags`, `albums`, `album_images`, `ai_results`. All access goes through `src/core/database.py`. Connection opened per-call via `get_connection()` (context manager, Row factory).
+SQLite with WAL journal mode, foreign keys enabled, and `PRAGMA busy_timeout = 5000` (prevents "database is locked" errors when background threads — `FolderLoaderRunnable`, `FileOpWorker` — write concurrently). Tables: `images`, `tags`, `image_tags`, `albums`, `album_images`, `ai_results`, `saved_filters`. All access goes through `src/core/database.py`. Connection opened per-call via `get_connection()` (context manager, Row factory).
+
+The `saved_filters` table stores named tag filter presets: `id, name TEXT UNIQUE, tags TEXT (JSON array), mode TEXT ("AND"|"OR"), created_at TEXT`. Functions: `create_saved_filter(name, tags, mode)`, `get_all_saved_filters()`, `get_saved_filter(id)`, `delete_saved_filter(id)`, `rename_saved_filter(id, new_name)`. `create_saved_filter` raises `sqlite3.IntegrityError` on duplicate name (caller handles).
 
 The `images` table has a `content_hash TEXT` column (SHA-256 of first 64KB + file size) used for tag recovery when images are moved outside the app. Added via `ALTER TABLE` migration in `init_db()`.
 
@@ -183,6 +186,24 @@ Move and copy run on `FileOpWorker(QThread)` — the GUI thread never blocks. Bo
 
 ### Delete safety
 "Delete Permanently" in the context menu is separated from "Delete (Trash)" by a `menu.addSeparator()` and carries a `SP_MessageBoxWarning` icon to prevent misclicks. `_delete_images` tracks a `deleted` counter and writes the outcome ("Deleted N image(s) — M failed") to the status bar after each operation.
+
+### Triage Mode
+`TriageImageViewer(ImageViewer)` — subclass launched via **View → Triage Mode… (Ctrl+K)** or "Triage from here…" in the gallery context menu. Single-key actions via `QShortcut(WindowShortcut)` (bypasses `ZoomableGraphicsView` focus):
+- **S** — adds `star` tag via `db.add_tags_to_image_batch`, refreshes tag strip
+- **T** — opens floating tag-input overlay (`QFrame` + `QLineEdit` with `QCompleter`); Enter applies tag, Esc dismisses
+- **A** — opens album picker overlay (`QFrame` + `QListWidget`); double-click or Enter adds image to album, Esc dismisses
+- **D** — calls `file_ops.delete_image(use_trash=True)`, pops from `_all_images`, auto-advances; when last image deleted, emits all accumulated `image_trashed` signals then calls `accept()`
+
+All overlays disabled S/T/A/D shortcuts while showing (`_set_shortcuts_enabled(False)`). `_dismiss_overlays()` re-enables them and returns focus to `_view`. HUD `QLabel` parented directly to dialog, positioned at bottom via `resizeEvent`/`showEvent`. `_flash_hud(msg)` shows feedback text for 1.5s then resets to the legend.
+
+**Batch signal emission:** `image_trashed` signals are collected in `_trashed_ids` and emitted in `closeEvent` (normal close) or immediately before `accept()` (last-image-trashed path), because `accept()` does not trigger `closeEvent` in PyQt6. `MainWindow._on_triage_image_trashed` calls `gallery.remove_image(image_id)` for each.
+
+### Smart Collections
+`AlbumPanel` has a second `QListWidget` (`_collections_list`, max 150px height) under a "Smart Collections" header. New signal: `collection_selected = pyqtSignal(int)` (filter_id). Items show collection name as label, filter details in tooltip. RMB context menu: Rename / Delete. `refresh()` calls `_refresh_albums()` + `_refresh_collections()`.
+
+Saving: **View → Save Filter as Collection…** (enabled when `_active_tag_filter` is non-empty) prompts for a name and calls `db.create_saved_filter(name, tags, mode)`. The action is disabled when navigating to a folder, album, or collection view.
+
+`MainWindow._on_collection_selected(filter_id)`: sets `_active_collection_id`, clears `_active_tag_filter`/`_active_album_id`, re-runs `db.get_images_by_tags_and/or(tags)` with saved mode, loads into gallery with `show_folder_origin=True`. `_reload_current_view()` handles collection case first (before album and tag filter). `_active_collection_id` is cleared at all folder-open and filter-change sites.
 
 ### Album panel rename safety
 Album display text is `f"{name} ({count})"`. The rename/delete handlers extract the name with `.rsplit(" (", 1)[0]` (not `.split`) to correctly handle album names that contain ` (` — e.g. `"Summer (2024)"` round-trips correctly.

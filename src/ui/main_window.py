@@ -1,4 +1,5 @@
 import os
+import json
 from PyQt6.QtWidgets import (QMainWindow, QPushButton, QWidget, QHBoxLayout, QVBoxLayout,
                               QSplitter, QStatusBar, QProgressBar, QLabel,
                               QFileDialog, QMessageBox, QInputDialog, QMenu,
@@ -7,7 +8,7 @@ from PyQt6.QtCore import Qt, QThread, QSettings, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup
 from src.ui.folder_tree import FolderTree
 from src.ui.gallery_view import GalleryView
-from src.ui.image_viewer import ImageViewer, VIDEO_EXTENSIONS
+from src.ui.image_viewer import ImageViewer, TriageImageViewer, VIDEO_EXTENSIONS
 from src.ui.tag_panel import TagPanel
 from src.ui.album_panel import AlbumPanel
 from src.core import database as db, image_scanner, file_ops
@@ -76,6 +77,7 @@ class MainWindow(QMainWindow):
         self._active_tag_filter: list[str] = []
         self._active_tag_mode: str = "AND"
         self._active_album_id: int | None = None
+        self._active_collection_id: int | None = None
         self._wd14_worker: WD14Worker | None = None
         self._rating_sort_worker: RatingSortWorker | None = None
         self._scan_worker: ScanWorker | None = None
@@ -230,6 +232,7 @@ class MainWindow(QMainWindow):
         # Album panel: instantiated but shown on demand as a floating dialog
         self._album_panel = AlbumPanel()
         self._album_panel.album_selected.connect(self._on_album_selected)
+        self._album_panel.collection_selected.connect(self._on_collection_selected)
         self._album_dialog: QDialog | None = None
 
     def _build_menu(self):
@@ -300,6 +303,17 @@ class MainWindow(QMainWindow):
         act_albums = QAction("Albums…", self)
         act_albums.triggered.connect(self._show_album_dialog)
         view_menu.addAction(act_albums)
+
+        self._act_save_collection = QAction("Save Filter as Collection…", self)
+        self._act_save_collection.setEnabled(False)
+        self._act_save_collection.triggered.connect(self._save_current_filter_as_collection)
+        view_menu.addAction(self._act_save_collection)
+
+        view_menu.addSeparator()
+        self._act_triage = QAction("Triage Mode…", self)
+        self._act_triage.setShortcut("Ctrl+K")
+        self._act_triage.triggered.connect(self._open_triage_mode)
+        view_menu.addAction(self._act_triage)
 
         self._splitter.splitterMoved.connect(self._on_splitter_moved)
 
@@ -437,6 +451,7 @@ class MainWindow(QMainWindow):
             self._current_folder = folder
             self._active_tag_filter = []
             self._active_album_id = None
+            self._active_collection_id = None
             self._status_prefix = f"Folder: {os.path.basename(folder)}"
             self._status_label.setToolTip(folder)
             self._gallery.load_folder(folder)
@@ -457,6 +472,7 @@ class MainWindow(QMainWindow):
         self._current_folder = parent
         self._active_tag_filter = []
         self._active_album_id = None
+        self._active_collection_id = None
         self._status_prefix = f"Folder: {os.path.basename(parent)}"
         self._status_label.setToolTip(parent)
         self._folder_tree.set_root(parent)
@@ -494,6 +510,7 @@ class MainWindow(QMainWindow):
         self._current_folder = path
         self._active_tag_filter = []
         self._active_album_id = None
+        self._active_collection_id = None
         self._status_prefix = f"Folder: {os.path.basename(path)}"
         self._status_label.setToolTip(path)
         self._folder_tree.set_root(path)
@@ -543,6 +560,7 @@ class MainWindow(QMainWindow):
         self._current_folder = folder
         self._active_tag_filter = []
         self._active_album_id = None
+        self._active_collection_id = None
         self._status_prefix = f"Folder: {os.path.basename(folder)}"
         self._status_label.setToolTip(folder)
         self._gallery.load_folder(folder)
@@ -565,6 +583,7 @@ class MainWindow(QMainWindow):
         self._current_folder = parent_dir
         self._active_tag_filter = []
         self._active_album_id = None
+        self._active_collection_id = None
         self._status_prefix = f"Folder: {os.path.basename(parent_dir)}"
         self._status_label.setToolTip(parent_dir)
         self._folder_tree.set_root(parent_dir)
@@ -639,6 +658,8 @@ class MainWindow(QMainWindow):
         self._active_tag_filter = tag_names
         self._active_tag_mode = mode
         self._active_album_id = None
+        self._active_collection_id = None
+        self._act_save_collection.setEnabled(bool(tag_names))
         self._update_filter_chips(tag_names, mode)
         if tag_names:
             rows = (db.get_images_by_tags_and(tag_names)
@@ -695,6 +716,8 @@ class MainWindow(QMainWindow):
     def _on_album_selected(self, album_id: int):
         self._active_album_id = album_id
         self._active_tag_filter = []
+        self._active_collection_id = None
+        self._act_save_collection.setEnabled(False)
         rows = db.get_images_in_album(album_id)
         album = db.get_album(album_id)
         loaded_images = self._gallery.load_images(rows)
@@ -717,12 +740,60 @@ class MainWindow(QMainWindow):
         self._reload_current_view()
 
     def _reload_current_view(self):
-        if self._active_album_id is not None:
+        if self._active_collection_id is not None:
+            self._on_collection_selected(self._active_collection_id)
+        elif self._active_album_id is not None:
             self._on_album_selected(self._active_album_id)
         elif self._active_tag_filter:
             self._on_tag_filter(self._active_tag_filter, self._active_tag_mode)
         elif self._current_folder:
             self._gallery.load_folder(self._current_folder)
+
+    def _on_collection_selected(self, filter_id: int):
+        row = db.get_saved_filter(filter_id)
+        if not row:
+            return
+        self._active_collection_id = filter_id
+        self._active_tag_filter = []
+        self._active_album_id = None
+        self._act_save_collection.setEnabled(False)
+        try:
+            tags = json.loads(row["tags"])
+        except (ValueError, TypeError):
+            tags = []
+        mode = row["mode"]
+        rows = (db.get_images_by_tags_and(tags) if mode == "AND"
+                else db.get_images_by_tags_or(tags))
+        loaded = self._gallery.load_images(rows, show_folder_origin=True)
+        parts = []
+        if loaded.sfw_hidden > 0:
+            parts.append(f"{loaded.sfw_hidden} hidden by SFW Mode")
+        if loaded.missing > 0:
+            parts.append(f"{loaded.missing} missing from disk")
+        suffix = f", {', '.join(parts)}" if parts else ""
+        tag_preview = ", ".join(tags[:2]) + ("…" if len(tags) > 2 else "")
+        self._status_prefix = (
+            f"Collection: {row['name']} [{mode}] {tag_preview} ({loaded.shown} images{suffix})"
+        )
+        self._status_label.setText(self._status_prefix)
+
+    def _save_current_filter_as_collection(self):
+        if not self._active_tag_filter:
+            return
+        default_name = " + ".join(self._active_tag_filter[:2])
+        name, ok = QInputDialog.getText(
+            self, "Save Collection", "Collection name:", text=default_name
+        )
+        if not ok or not name.strip():
+            return
+        try:
+            db.create_saved_filter(name.strip(), self._active_tag_filter, self._active_tag_mode)
+            self._album_panel.refresh()
+        except Exception:
+            QMessageBox.warning(
+                self, "Save Failed",
+                "A collection with that name already exists."
+            )
 
     def _on_empty_gallery_context_menu(self, pos):
         menu = QMenu(self)
@@ -739,6 +810,7 @@ class MainWindow(QMainWindow):
     def _on_context_menu(self, image_ids: list[int], pos):
         menu = QMenu(self)
         menu.addAction("View", lambda: self._view_image(image_ids[0]))
+        menu.addAction("Triage from here…", lambda: self._open_triage_from(image_ids[0]))
         menu.addAction("Reveal in Tree", lambda: self._open_location_in_tree(image_ids))
         menu.addSeparator()
         menu.addAction("Move to…", lambda: self._move_images(image_ids))
@@ -774,6 +846,36 @@ class MainWindow(QMainWindow):
         nav = self._make_image_nav_list()
         idx = next((i for i, (iid, _) in enumerate(nav) if iid == image_id), 0)
         ImageViewer(image_id, row["path"], self, all_images=nav, current_index=idx).exec()
+
+    def _open_triage_mode(self):
+        nav = self._make_image_nav_list()
+        if not nav:
+            QMessageBox.information(
+                self, "Triage Mode", "No images to triage in the current view."
+            )
+            return
+        selected = self._gallery.get_selected_ids()
+        idx = next(
+            (i for i, (iid, _) in enumerate(nav) if iid == (selected[0] if selected else -1)),
+            0
+        )
+        iid, path = nav[idx]
+        viewer = TriageImageViewer(iid, path, self, all_images=nav, current_index=idx)
+        viewer.image_trashed.connect(self._on_triage_image_trashed)
+        viewer.exec()
+
+    def _open_triage_from(self, image_id: int):
+        nav = self._make_image_nav_list()
+        if not nav:
+            return
+        idx = next((i for i, (iid, _) in enumerate(nav) if iid == image_id), 0)
+        iid, path = nav[idx]
+        viewer = TriageImageViewer(iid, path, self, all_images=nav, current_index=idx)
+        viewer.image_trashed.connect(self._on_triage_image_trashed)
+        viewer.exec()
+
+    def _on_triage_image_trashed(self, image_id: int):
+        self._gallery.remove_image(image_id)
 
     def _move_images(self, image_ids: list[int]):
         dest = QFileDialog.getExistingDirectory(self, "Move to Folder")

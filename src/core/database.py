@@ -1,6 +1,7 @@
 import sqlite3
 import os
 import hashlib
+import json
 from datetime import datetime
 from typing import Optional
 
@@ -80,6 +81,14 @@ def init_db():
                 confidence REAL NOT NULL,
                 classified_at TEXT,
                 PRIMARY KEY (image_id, stage)
+            );
+
+            CREATE TABLE IF NOT EXISTS saved_filters (
+                id INTEGER PRIMARY KEY,
+                name TEXT UNIQUE NOT NULL,
+                tags TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                created_at TEXT NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_image_path ON images(path);
@@ -658,3 +667,39 @@ def get_ai_result(image_id: int, stage: str) -> Optional[sqlite3.Row]:
             "SELECT * FROM ai_results WHERE image_id = ? AND stage = ?",
             (image_id, stage)
         ).fetchone()
+
+
+# --- Saved Filters ---
+
+def create_saved_filter(name: str, tags: list[str], mode: str) -> int:
+    now = datetime.now().isoformat()
+    with get_connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO saved_filters (name, tags, mode, created_at) VALUES (?, ?, ?, ?)",
+            (name, json.dumps(tags), mode, now)
+        )
+        return cur.lastrowid
+
+
+def get_all_saved_filters() -> list:
+    with get_connection() as conn:
+        return conn.execute("SELECT * FROM saved_filters ORDER BY name").fetchall()
+
+
+def get_saved_filter(filter_id: int) -> Optional[sqlite3.Row]:
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT * FROM saved_filters WHERE id = ?", (filter_id,)
+        ).fetchone()
+
+
+def delete_saved_filter(filter_id: int):
+    with get_connection() as conn:
+        conn.execute("DELETE FROM saved_filters WHERE id = ?", (filter_id,))
+
+
+def rename_saved_filter(filter_id: int, new_name: str):
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE saved_filters SET name = ? WHERE id = ?", (new_name, filter_id)
+        )

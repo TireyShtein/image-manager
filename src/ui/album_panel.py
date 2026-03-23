@@ -1,6 +1,7 @@
+import json
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
                               QListWidgetItem, QPushButton, QLineEdit, QLabel,
-                              QInputDialog, QMessageBox, QFrame)
+                              QInputDialog, QMessageBox, QFrame, QMenu)
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QFont
 from src.core import database as db
@@ -22,7 +23,8 @@ _BTN_QSS = (
 
 
 class AlbumPanel(QWidget):
-    album_selected = pyqtSignal(int)   # album_id to filter gallery
+    album_selected = pyqtSignal(int)       # album_id
+    collection_selected = pyqtSignal(int)  # filter_id
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -96,6 +98,29 @@ class AlbumPanel(QWidget):
 
         self._update_button_states()
 
+        # Smart Collections section
+        layout.addSpacing(8)
+
+        lbl_collections = QLabel("Smart Collections")
+        font2 = lbl_collections.font()
+        font2.setWeight(QFont.Weight.DemiBold)
+        lbl_collections.setFont(font2)
+        layout.addWidget(lbl_collections)
+
+        sep3 = QFrame()
+        sep3.setFrameShape(QFrame.Shape.HLine)
+        sep3.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(sep3)
+        layout.addSpacing(2)
+
+        self._collections_list = QListWidget()
+        self._collections_list.setStyleSheet(_LIST_QSS)
+        self._collections_list.setMaximumHeight(150)
+        self._collections_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._collections_list.itemDoubleClicked.connect(self._on_collection_double_clicked)
+        self._collections_list.customContextMenuRequested.connect(self._on_collection_context_menu)
+        layout.addWidget(self._collections_list)
+
     def _update_button_states(self):
         has_album = self._list.currentItem() is not None
         has_images = bool(self._selected_image_ids)
@@ -109,12 +134,28 @@ class AlbumPanel(QWidget):
         self._update_button_states()
 
     def refresh(self):
+        self._refresh_albums()
+        self._refresh_collections()
+
+    def _refresh_albums(self):
         self._list.clear()
         for row in db.get_all_albums():
             count = db.get_album_image_count(row["id"])
             item = QListWidgetItem(f"{row['name']} ({count})")
             item.setData(Qt.ItemDataRole.UserRole, row["id"])
             self._list.addItem(item)
+
+    def _refresh_collections(self):
+        self._collections_list.clear()
+        for row in db.get_all_saved_filters():
+            try:
+                tags = json.loads(row["tags"])
+            except (ValueError, TypeError):
+                tags = []
+            item = QListWidgetItem(row["name"])
+            item.setData(Qt.ItemDataRole.UserRole, row["id"])
+            item.setToolTip(f"[{row['mode']}] {', '.join(tags) or '(no tags)'}")
+            self._collections_list.addItem(item)
 
     def _create_album(self):
         name = self._album_input.text().strip()
@@ -171,3 +212,47 @@ class AlbumPanel(QWidget):
     def _on_album_double_clicked(self, item: QListWidgetItem):
         album_id = item.data(Qt.ItemDataRole.UserRole)
         self.album_selected.emit(album_id)
+
+    def _on_collection_double_clicked(self, item: QListWidgetItem):
+        filter_id = item.data(Qt.ItemDataRole.UserRole)
+        self.collection_selected.emit(filter_id)
+
+    def _on_collection_context_menu(self, pos):
+        item = self._collections_list.itemAt(pos)
+        if not item:
+            return
+        filter_id = item.data(Qt.ItemDataRole.UserRole)
+        menu = QMenu(self)
+        menu.addAction("Rename…", lambda: self._rename_collection(filter_id))
+        menu.addAction("Delete", lambda: self._delete_collection(filter_id))
+        menu.exec(self._collections_list.mapToGlobal(pos))
+
+    def _rename_collection(self, filter_id: int):
+        row = db.get_saved_filter(filter_id)
+        if not row:
+            return
+        new_name, ok = QInputDialog.getText(
+            self, "Rename Collection", "New name:", text=row["name"]
+        )
+        if ok and new_name.strip() and new_name.strip() != row["name"]:
+            try:
+                db.rename_saved_filter(filter_id, new_name.strip())
+                self._refresh_collections()
+            except Exception:
+                QMessageBox.warning(
+                    self, "Rename Failed",
+                    "A collection with that name already exists."
+                )
+
+    def _delete_collection(self, filter_id: int):
+        row = db.get_saved_filter(filter_id)
+        if not row:
+            return
+        reply = QMessageBox.question(
+            self, "Delete Collection",
+            f"Delete smart collection '{row['name']}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            db.delete_saved_filter(filter_id)
+            self._refresh_collections()
