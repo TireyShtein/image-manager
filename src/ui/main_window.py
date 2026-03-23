@@ -582,10 +582,11 @@ class MainWindow(QMainWindow):
     def _open_location_in_tree(self, image_ids: list[int]):
         if not image_ids:
             return
-        row = db.get_image(image_ids[0])
-        if not row:
+        rows = db.get_images_batch(image_ids)
+        first_row = rows.get(image_ids[0])
+        if not first_row:
             return
-        parent_dir = os.path.dirname(row["path"])
+        parent_dir = os.path.dirname(first_row["path"])
         if not os.path.isdir(parent_dir):
             return
         self._current_folder = parent_dir
@@ -604,11 +605,10 @@ class MainWindow(QMainWindow):
         self._update_filter_chips([])
         self._update_go_up_button()
         # Highlight the revealed image(s) in the tree after the model loads
-        paths = []
-        for iid in image_ids:
-            r = db.get_image(iid)
-            if r and os.path.dirname(r["path"]) == parent_dir:
-                paths.append(r["path"])
+        paths = [
+            r["path"] for iid, r in rows.items()
+            if os.path.dirname(r["path"]) == parent_dir
+        ]
         if paths:
             self._folder_tree.select_files(paths)
 
