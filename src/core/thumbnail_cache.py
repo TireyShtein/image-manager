@@ -7,6 +7,18 @@ CACHE_DIR = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'Im
 
 VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.wmv', '.flv', '.m4v'}
 
+# Cache of subdirectories already confirmed to exist this process lifetime.
+# Avoids repeated makedirs syscalls; safe under concurrent access because
+# makedirs(exist_ok=True) is idempotent and CPython's GIL protects set.add().
+_created_subdirs: set[str] = set()
+
+
+def _ensure_subdir(thumb_path: str) -> None:
+    d = os.path.dirname(thumb_path)
+    if d not in _created_subdirs:
+        os.makedirs(d, exist_ok=True)
+        _created_subdirs.add(d)
+
 
 def get_thumbnail_path(image_path: str) -> str:
     key = hashlib.md5(image_path.encode()).hexdigest()
@@ -25,7 +37,7 @@ def get_or_create_thumbnail(image_path: str) -> str | None:
 
 def _generate_thumbnail(image_path: str, thumb_path: str) -> str | None:
     try:
-        os.makedirs(os.path.dirname(thumb_path), exist_ok=True)
+        _ensure_subdir(thumb_path)
         with Image.open(image_path) as img:
             img.thumbnail(THUMB_SIZE, Image.LANCZOS)
             rgb = img.convert('RGB')
@@ -37,7 +49,7 @@ def _generate_thumbnail(image_path: str, thumb_path: str) -> str | None:
 
 def _generate_video_placeholder(image_path: str, thumb_path: str) -> str | None:
     try:
-        os.makedirs(os.path.dirname(thumb_path), exist_ok=True)
+        _ensure_subdir(thumb_path)
         img = Image.new('RGB', THUMB_SIZE, color=(30, 30, 30))
         draw = ImageDraw.Draw(img)
         # Draw a play triangle in the centre

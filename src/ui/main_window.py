@@ -90,6 +90,7 @@ class MainWindow(QMainWindow):
         self._file_op_worker: FileOpWorker | None = None
         self._settings = QSettings("ImageManager", "ImageManager")
         self._sfw_mode: bool = self._settings.value("sfw_mode", False, type=bool)
+        self._density: str = self._settings.value("density", "comfortable")
         self._status_prefix = "Ready"
         self._gallery_total: int = 0
         _db_is_new = not db.db_exists()
@@ -111,11 +112,12 @@ class MainWindow(QMainWindow):
         self._tag_refresh_timer.setInterval(500)
         self._tag_refresh_timer.timeout.connect(self._tag_panel.refresh)
 
-        self._gallery.set_density(self._settings.value("density", "comfortable"))
+        self._gallery.set_density(self._density)
         _recent = self._settings.value("recent_folders", [])
         if not isinstance(_recent, list):
             _recent = [_recent] if isinstance(_recent, str) and _recent else []
-        self._gallery.set_recent_folders(_recent)
+        self._recent_folders: list[str] = _recent
+        self._gallery.set_recent_folders(self._recent_folders)
         self._restore_last_folder()
         self._tag_panel.refresh()
 
@@ -276,7 +278,7 @@ class MainWindow(QMainWindow):
 
         density_group = QActionGroup(self)
         density_group.setExclusive(True)
-        saved_density = self._settings.value("density", "comfortable")
+        saved_density = self._density
         density_menu = view_menu.addMenu("Density")
         for label, key in [("Compact", "compact"), ("Comfortable", "comfortable"), ("Spacious", "spacious")]:
             act = QAction(label, self)
@@ -500,13 +502,11 @@ class MainWindow(QMainWindow):
             self._btn_go_up.setEnabled(False)
 
     def _add_recent_folder(self, path: str):
-        val = self._settings.value("recent_folders", [])
-        if not isinstance(val, list):
-            val = [val] if isinstance(val, str) and val else []
-        recent = [p for p in val if p != path]
+        recent = [p for p in self._recent_folders if p != path]
         recent.insert(0, path)
         # Prune stale entries (deleted/unmounted paths) and cap at 5
         recent = [p for p in recent if os.path.isdir(p)][:5]
+        self._recent_folders = recent
         self._settings.setValue("recent_folders", recent)
         self._gallery.set_recent_folders(recent)
 

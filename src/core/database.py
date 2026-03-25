@@ -250,25 +250,50 @@ def get_or_create_images_batch(paths: list[str]) -> tuple[list, int]:
         for i in range(0, len(paths), CHUNK):
             chunk = paths[i:i + CHUNK]
 
-            # --- Phase 1: Compute hashes outside DB writes (pure Python I/O) ---
-            hash_map = {p: compute_content_hash(p) for p in chunk}
+            placeholders = ",".join("?" * len(chunk))
             filename_map = {p: os.path.basename(p) for p in chunk}
 
-            # --- Phase 2: Batch INSERT OR IGNORE (single short write burst) ---
-            conn.executemany(
-                "INSERT OR IGNORE INTO images "
-                "(path, filename, width, height, file_size, date_added, date_modified, content_hash) "
-                "VALUES (?, ?, NULL, NULL, NULL, ?, ?, ?)",
-                [(p, filename_map[p], now, now, hash_map[p]) for p in chunk],
-            )
-
-            # --- Phase 3: Fetch all rows for this chunk in one query ---
-            placeholders = ",".join("?" * len(chunk))
-            existing_rows = conn.execute(
+            # --- Phase 1: Pre-check existing rows to skip unnecessary hashing ---
+            # Reuse stored hashes for known paths; only read files that are new
+            # or missing a hash (backfill targets). For a revisited folder this
+            # eliminates all 64KB-per-file reads entirely.
+            pre_rows = conn.execute(
                 f"SELECT id, path, content_hash FROM images WHERE path IN ({placeholders})",
                 chunk,
             ).fetchall()
-            existing_by_path = {r["path"]: r for r in existing_rows}
+            # Convert to plain dicts immediately so existing_by_path is a
+            # uniform dict[str, dict] throughout all phases — avoids a mixed
+            # sqlite3.Row / plain dict state after Phase 4 backfill replacements.
+            pre_existing = {r["path"]: dict(r) for r in pre_rows}
+
+            hash_map = {}
+            for p in chunk:
+                stored = pre_existing.get(p)
+                if stored and stored["content_hash"] is not None:
+                    hash_map[p] = stored["content_hash"]
+                else:
+                    hash_map[p] = compute_content_hash(p)
+
+            # --- Phase 2: Batch INSERT OR IGNORE for new paths only ---
+            new_paths = [p for p in chunk if p not in pre_existing]
+            if new_paths:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO images "
+                    "(path, filename, width, height, file_size, date_added, date_modified, content_hash) "
+                    "VALUES (?, ?, NULL, NULL, NULL, ?, ?, ?)",
+                    [(p, filename_map[p], now, now, hash_map[p]) for p in new_paths],
+                )
+
+            # --- Phase 3: Fetch rows for newly inserted paths; merge with pre-existing ---
+            existing_by_path = dict(pre_existing)
+            if new_paths:
+                np_placeholders = ",".join("?" * len(new_paths))
+                new_rows = conn.execute(
+                    f"SELECT id, path, content_hash FROM images WHERE path IN ({np_placeholders})",
+                    new_paths,
+                ).fetchall()
+                for r in new_rows:
+                    existing_by_path[r["path"]] = dict(r)
 
             # --- Phase 4: Backfill content_hash where missing ---
             needs_backfill = [

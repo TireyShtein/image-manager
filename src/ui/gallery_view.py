@@ -283,17 +283,50 @@ class FolderLoaderRunnable(QRunnable):
 
     @pyqtSlot()
     def run(self):
-        paths = []
+        name_path_pairs = []
         try:
             with os.scandir(self._folder) as entries:
                 for entry in entries:
                     if entry.is_file() and os.path.splitext(entry.name)[1].lower() in self._media_exts:
-                        paths.append(entry.path)
+                        name_path_pairs.append((entry.name.lower(), entry.path))
         except OSError:
             pass
-        sorted_paths = sorted(paths, key=lambda p: os.path.basename(p).lower())
+        sorted_paths = [p for _, p in sorted(name_path_pairs)]
         rows, recovered = db.get_or_create_images_batch(sorted_paths)
         self._signals.rows_ready.emit(rows, self._token, recovered)
+
+
+class _HoverCardSignals(QObject):
+    ready = pyqtSignal(int, str, list)  # (token, size_str, tag_names)
+
+
+class _HoverCardRunnable(QRunnable):
+    def __init__(self, image_id: int, path: str, token: int, signals: _HoverCardSignals):
+        super().__init__()
+        self._image_id = image_id
+        self._path = path
+        self._token = token
+        self._signals = signals
+        self.setAutoDelete(True)
+
+    @pyqtSlot()
+    def run(self):
+        try:
+            try:
+                size_bytes = os.path.getsize(self._path)
+                if size_bytes >= 1_048_576:
+                    size_str = f"{size_bytes / 1_048_576:.1f} MB"
+                elif size_bytes >= 1024:
+                    size_str = f"{size_bytes / 1024:.0f} KB"
+                else:
+                    size_str = f"{size_bytes} B"
+            except OSError:
+                size_str = "—"
+            tag_rows = db.get_tags_for_images([self._image_id])
+            tag_names = [r[0] for r in tag_rows]
+            self._signals.ready.emit(self._token, size_str, tag_names)
+        except Exception:
+            pass
 
 
 class GalleryModel(QAbstractListModel):
@@ -315,16 +348,26 @@ class GalleryModel(QAbstractListModel):
         self._error_ids: set[int] = set()
 
     def set_images(self, rows):
-        self.beginResetModel()
-        self._items = [{"id": r["id"], "path": r["path"],
-                        "display_pix": None} for r in rows]
+        new_items = [{"id": r["id"], "path": r["path"], "display_pix": None} for r in rows]
+        # Use insertRows when the model is empty — avoids the full reset signal
+        # cascade (persistent index invalidation, selection clear, full repaint).
+        # Full reset is still required when replacing an existing page of rows.
+        append_only = not self._items and bool(new_items)
+        if append_only:
+            self.beginInsertRows(QModelIndex(), 0, len(new_items) - 1)
+        else:
+            self.beginResetModel()
+        self._items = new_items
         self._id_index = {item["id"]: i for i, item in enumerate(self._items)}
         self._total = len(self._items)
         self._loaded = 0
         self._queued = set()
         self._error_ids = set()
         self._thumb_token += 1
-        self.endResetModel()
+        if append_only:
+            self.endInsertRows()
+        else:
+            self.endResetModel()
         if self._total == 0:
             self._signals.all_loaded.emit()
         # Do NOT call _start_loading() — thumbnails are loaded lazily via
@@ -611,7 +654,10 @@ class GalleryView(QListView):
         self._hover_timer.setInterval(500)
         self._hover_timer.timeout.connect(self._show_hover_card)
         self._hover_row: int = -1
+        self._hover_card_token: int = 0
         self._hover_global_pos = QPoint()
+        self._hover_card_signals = _HoverCardSignals(self)
+        self._hover_card_signals.ready.connect(self._on_hover_card_ready)
 
         self.viewport().setMouseTracking(True)
         self.viewport().installEventFilter(self)
@@ -702,24 +748,27 @@ class GalleryView(QListView):
         if item is None:
             return
         path = item["path"]
+        image_id = item["id"]
+        self._hover_card_token += 1
+        token = self._hover_card_token
         basename = os.path.basename(path)
         fm = self._hover_name_label.fontMetrics()
         self._hover_name_label.setText(fm.elidedText(basename, Qt.TextElideMode.ElideMiddle, 260))
         self._hover_name_label.setToolTip(basename)
-        try:
-            size_bytes = os.path.getsize(path)
-            if size_bytes >= 1_048_576:
-                size_str = f"{size_bytes / 1_048_576:.1f} MB"
-            elif size_bytes >= 1024:
-                size_str = f"{size_bytes / 1024:.0f} KB"
-            else:
-                size_str = f"{size_bytes} B"
-        except OSError:
-            size_str = "—"
+        self._hover_size_label.setText("")
+        self._hover_tags_section_label.hide()
+        self._hover_tags_label.hide()
+        QThreadPool.globalInstance().start(
+            _HoverCardRunnable(image_id, path, token, self._hover_card_signals)
+        )
+
+    @pyqtSlot(int, str, list)
+    def _on_hover_card_ready(self, token: int, size_str: str, tag_names: list):
+        if token != self._hover_card_token:
+            return
         self._hover_size_label.setText(size_str)
-        tag_rows = db.get_tags_for_images([item["id"]])
-        if tag_rows:
-            self._hover_tags_label.setText(" · ".join(r[0] for r in tag_rows))
+        if tag_names:
+            self._hover_tags_label.setText(" · ".join(tag_names))
             self._hover_tags_section_label.show()
             self._hover_tags_label.show()
         else:
@@ -745,6 +794,7 @@ class GalleryView(QListView):
     def _hide_hover_card(self, *_args):
         self._hover_timer.stop()
         self._hover_row = -1
+        self._hover_card_token += 1  # invalidate any in-flight runnables
         self._hover_card.hide()
 
     def _on_scroll(self, *_args):
