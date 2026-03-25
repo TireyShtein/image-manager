@@ -11,7 +11,7 @@ MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 # Name filters for QFileSystemModel (shows these files + all directories)
 _NAME_FILTERS = [f'*{ext}' for ext in MEDIA_EXTENSIONS]
 
-# Drag-and-drop MIME type for image ID payloads (must match gallery_view.py)
+# Drag-and-drop MIME type for image ID payloads (must match gallery/constants.py)
 _MIME_IMAGE_IDS = "application/x-imagemanager-ids"
 
 

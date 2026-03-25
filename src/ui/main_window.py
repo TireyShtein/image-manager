@@ -7,15 +7,17 @@ from PyQt6.QtWidgets import (QMainWindow, QPushButton, QWidget, QHBoxLayout, QVB
 from PyQt6.QtCore import Qt, QThread, QSettings, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup
 from src.ui.folder_tree import FolderTree
-from src.ui.gallery_view import GalleryView
-from src.ui.image_viewer import ImageViewer, TriageImageViewer, VIDEO_EXTENSIONS
+from src.ui.gallery import GalleryView
+from src.ui.image_viewer import ImageViewer, VIDEO_EXTENSIONS
+from src.ui.triage_viewer import TriageImageViewer
 from src.ui.tag_panel import TagPanel
 from src.ui.album_panel import AlbumPanel
 from src.core import database as db, image_scanner, file_ops
 from src.ai.wd14_worker import WD14Worker
 from src.ai.rating_sort_worker import RatingSortWorker
 from src.ai.duplicate_worker import DuplicateScanWorker
-from src.ui.duplicates_dialog import DuplicatesDialog
+from src.ui.duplicates_viewer import DuplicatesDialog
+from src.ui.workers import ScanWorker, FileOpWorker
 
 _CHIP_STYLE = (
     "QPushButton { color: #dde; background: rgba(80,130,255,0.20);"
@@ -23,57 +25,6 @@ _CHIP_STYLE = (
     " padding: 1px 7px; font-size: 11px; }"
     "QPushButton:hover { background: rgba(80,130,255,0.35); }"
 )
-
-
-class ScanWorker(QThread):
-    progress = pyqtSignal(int, int)
-    finished_scan = pyqtSignal(int)  # number of images added
-
-    def __init__(self, folder: str, parent=None):
-        super().__init__(parent)
-        self._folder = folder
-
-    def run(self):
-        try:
-            def cb(current, total):
-                self.progress.emit(current, total)
-            added = image_scanner.scan_folder(self._folder, cb)
-            self.finished_scan.emit(added)
-        finally:
-            db.close_connection()
-
-
-class FileOpWorker(QThread):
-    progress = pyqtSignal(int, int)
-    item_done = pyqtSignal(int)            # image_id
-    item_error = pyqtSignal(int, str)
-    finished_op = pyqtSignal(int, list)    # (success_count, error_msgs)
-
-    def __init__(self, op: str, image_ids: list, dest: str, parent=None):
-        super().__init__(parent)
-        self._op = op
-        self._image_ids = image_ids
-        self._dest = dest
-
-    def run(self):
-        try:
-            errors, success = [], 0
-            total = len(self._image_ids)
-            for i, image_id in enumerate(self._image_ids):
-                try:
-                    if self._op == "move":
-                        file_ops.move_image(image_id, self._dest)
-                    else:
-                        file_ops.copy_image(image_id, self._dest)
-                    success += 1
-                    self.item_done.emit(image_id)
-                except Exception as e:
-                    errors.append(str(e))
-                    self.item_error.emit(image_id, str(e))
-                self.progress.emit(i + 1, total)
-            self.finished_op.emit(success, errors)
-        finally:
-            db.close_connection()
 
 
 class MainWindow(QMainWindow):
