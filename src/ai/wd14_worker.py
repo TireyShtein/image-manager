@@ -1,4 +1,5 @@
 import os
+import traceback
 from PyQt6.QtCore import QThread, pyqtSignal
 from src.core import database as db
 from src.ai import wd14_tagger
@@ -21,6 +22,14 @@ class WD14Worker(QThread):
     def run(self):
         try:
             total = len(self.image_ids)
+            try:
+                wd14_tagger.load_model()
+            except Exception as e:
+                print(f"[WD14] Model load failed: {e}")
+                traceback.print_exc()
+                self.error.emit(0, f"Failed to load WD14 model: {e}")
+                self.finished_all.emit(0, 0, total)
+                return
             image_map = db.get_images_batch(self.image_ids)
             already_rated = db.get_image_ids_with_rating_tag(self.image_ids)
             tagged, skipped, errors = 0, 0, 0
@@ -43,6 +52,8 @@ class WD14Worker(QThread):
                     self.image_done.emit(image_id, os.path.basename(row["path"]), tags)
                 except Exception as e:
                     errors += 1
+                    print(f"[WD14] Error on image_id={image_id} ({row.get('path', '?')}): {e}")
+                    traceback.print_exc()
                     self.error.emit(image_id, str(e))
             self.progress.emit(total, total)
             self.finished_all.emit(tagged, skipped, errors)

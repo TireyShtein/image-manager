@@ -1,49 +1,193 @@
-from wdtagger import Tagger
+"""WD14 SwinV2-v3 tagger backed by ONNX Runtime.
 
-GENERAL_THRESHOLD = 0.35
-CHARACTER_THRESHOLD = 0.9
-_tagger: Tagger | None = None
+Model: SmilingWolf/wd-swinv2-tagger-v3
+Downloaded on first use via huggingface_hub; cached in ~/.cache/huggingface/
+"""
+from __future__ import annotations
+
+import csv
+import logging
+import threading
+import traceback
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+logger = logging.getLogger(__name__)
+
+GENERAL_THRESHOLD: float = 0.35
+CHARACTER_THRESHOLD: float = 0.90
+
+_REPO_ID = "SmilingWolf/wd-swinv2-tagger-v3"
+_MODEL_FILE = "model.onnx"
+_TAGS_FILE = "selected_tags.csv"
+_INPUT_SIZE = 448
+
+# selected_tags.csv category values
+_CAT_RATING = 9
+_CAT_GENERAL = 0
+_CAT_CHARACTER = 4
+
+# Module-level singletons (lazy-loaded on first classify() call)
+_init_lock = threading.Lock()
+_session = None
+_tags: list[tuple[str, int]] | None = None  # [(name, category), ...]
+_input_name: str | None = None
 
 
-def _get_tagger() -> Tagger:
-    global _tagger
-    if _tagger is None:
-        # Default model: SmilingWolf/wd-swinv2-tagger-v3
-        _tagger = Tagger()
-    return _tagger
+def _download_file(filename: str) -> Path:
+    import os
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import LocalEntryNotFoundError, OfflineModeIsEnabled
+    try:
+        return Path(hf_hub_download(repo_id=_REPO_ID, filename=filename))
+    except OfflineModeIsEnabled:
+        raise RuntimeError(
+            f"Cannot download {filename!r}: HF_HUB_OFFLINE is set and the "
+            f"file is not cached. Disable offline mode or run once online."
+        )
+    except LocalEntryNotFoundError:
+        raise RuntimeError(
+            f"Cannot download {filename!r}: not cached and network unreachable. "
+            f"Connect to the internet and retry."
+        )
+    except Exception as exc:
+        print(f"[WD14] Download error for {filename!r}: {exc}")
+        traceback.print_exc()
+        raise RuntimeError(f"Failed to download {filename!r}: {exc}") from exc
+
+
+def _load_tags() -> list[tuple[str, int]]:
+    tags_path = _download_file(_TAGS_FILE)
+    with open(tags_path, newline="", encoding="utf-8") as f:
+        return [(row["name"], int(row["category"])) for row in csv.DictReader(f)]
+
+
+def _get_session():
+    global _session, _tags, _input_name
+    if _session is not None:
+        return _session, _tags, _input_name
+    with _init_lock:
+        if _session is not None:  # double-checked locking
+            return _session, _tags, _input_name
+        import onnxruntime as ort
+        model_path = _download_file(_MODEL_FILE)
+        tags = _load_tags()
+
+        opts = ort.SessionOptions()
+        opts.inter_op_num_threads = 1
+        opts.intra_op_num_threads = 4
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+        session = ort.InferenceSession(
+            model_path,
+            sess_options=opts,
+            providers=["CPUExecutionProvider"],
+        )
+        input_name = session.get_inputs()[0].name
+
+        # Assign atomically — _session last so it acts as the ready guard
+        _tags = tags
+        _input_name = input_name
+        _session = session
+        print(f"[WD14] ONNX session loaded (input={input_name!r}, tags={len(tags)})")
+        logger.info("WD14 ONNX session loaded (input=%r)", input_name)
+    return _session, _tags, _input_name
+
+
+def _preprocess(image_path: str) -> np.ndarray:
+    """Open image → white-padded square → 448×448 → float32 BGR NHWC (1,448,448,3)."""
+    with Image.open(Path(image_path)) as raw:
+        raw.load()  # force full decode; raises clearly on corrupt/truncated files
+        if raw.mode in ("RGBA", "LA") or (raw.mode == "P" and "transparency" in raw.info):
+            canvas = Image.new("RGBA", raw.size, (255, 255, 255, 255))
+            canvas.alpha_composite(raw.convert("RGBA"))
+            img = canvas.convert("RGB")
+        else:
+            img = raw.convert("RGB")
+    # img is a standalone in-memory image; file handle is closed above
+
+    w, h = img.size
+    max_dim = max(w, h)
+    padded = Image.new("RGB", (max_dim, max_dim), (255, 255, 255))
+    padded.paste(img, ((max_dim - w) // 2, (max_dim - h) // 2))
+    padded = padded.resize((_INPUT_SIZE, _INPUT_SIZE), Image.BICUBIC)
+
+    # Contiguous BGR array — avoids an extra copy at ONNX Runtime inference time
+    arr = np.ascontiguousarray(np.array(padded, dtype=np.float32)[:, :, ::-1])
+    return arr[np.newaxis]  # (1, 448, 448, 3) NHWC
+
+
+def _sigmoid(x: np.ndarray) -> np.ndarray:
+    # Numerically stable: avoids overflow warnings on extreme logits
+    return np.where(
+        x >= 0,
+        1.0 / (1.0 + np.exp(-x)),
+        np.exp(x) / (1.0 + np.exp(x)),
+    )
+
+
+def _postprocess(
+    probs: np.ndarray,
+    tags: list[tuple[str, int]],
+) -> list[tuple[str, float]]:
+    """Threshold general/character tags, argmax for rating.
+    Model already outputs sigmoid probabilities in [0, 1] — no sigmoid needed.
+    """
+    scores = probs[0]  # shape (N,)
+
+    collected: list[tuple[str, float]] = []
+    best_rating: tuple[str, float] | None = None
+
+    for idx, (name, category) in enumerate(tags):
+        score = float(scores[idx])
+        if category == _CAT_RATING:
+            if best_rating is None or score > best_rating[1]:
+                best_rating = (f"rating:{name}", score)
+        elif category == _CAT_GENERAL and score >= GENERAL_THRESHOLD:
+            collected.append((name, score))
+        elif category == _CAT_CHARACTER and score >= CHARACTER_THRESHOLD:
+            collected.append((name, score))
+
+    if best_rating is not None:
+        collected.append(best_rating)
+
+    collected.sort(key=lambda x: x[1], reverse=True)
+    return collected
+
+
+def load_model() -> None:
+    """Pre-initialize the ONNX session. Call once before tagging to surface errors early."""
+    _get_session()
+
+
+def release_session() -> None:
+    """Release the ONNX session and free model memory (~100 MB)."""
+    global _session, _tags, _input_name
+    with _init_lock:
+        _session = None
+        _tags = None
+        _input_name = None
 
 
 def classify(image_path: str) -> list[tuple[str, float]]:
-    """Returns [(tag, confidence), ...] sorted by confidence descending.
+    """Return [(tag, confidence), ...] sorted by confidence descending.
 
     Includes general content tags, character tags, and the top rating label.
-    Thresholds are applied by wdtagger (general=0.35, character=0.9).
+    API is identical to the previous wdtagger-backed implementation.
     """
-    tagger = _get_tagger()
-    result = tagger.tag(
-        image_path,
-        general_threshold=GENERAL_THRESHOLD,
-        character_threshold=CHARACTER_THRESHOLD,
-    )
-
-    tags: list[tuple[str, float]] = []
-
-    # general_tag_data and character_tag_data are dict[str, float]
-    tags.extend(result.general_tag_data.items())
-    tags.extend(result.character_tag_data.items())
-
-    # rating is the top rating label string (e.g. "general", "sensitive", "explicit")
-    if result.rating:
-        tags.append((f"rating:{result.rating}", result.rating_data[result.rating]))
-
-    tags.sort(key=lambda x: x[1], reverse=True)
-    return tags
+    session, tags, input_name = _get_session()
+    tensor = _preprocess(image_path)
+    outputs = session.run(None, {input_name: tensor})
+    return _postprocess(outputs[0], tags)  # outputs[0] is already sigmoid probabilities
 
 
 def get_all_tags() -> list[str]:
-    import csv
-    import importlib.resources
-    ref = importlib.resources.files("wdtagger.assets").joinpath("selected_tags.csv")
-    with importlib.resources.as_file(ref) as path:
-        with open(path, newline="", encoding="utf-8") as f:
-            return sorted(row["name"] for row in csv.DictReader(f))
+    """Return sorted list of all tag names from selected_tags.csv."""
+    if _tags is not None:
+        return sorted(name for name, _ in _tags)
+    tags_path = _download_file(_TAGS_FILE)
+    with open(tags_path, newline="", encoding="utf-8") as f:
+        return sorted(row["name"] for row in csv.DictReader(f))

@@ -13,7 +13,7 @@ After any session that includes a major update — new feature added, bug fixed,
 .venv\Scripts\python main.py
 ```
 
-> **Windows DLL gotcha:** `import torch` must appear before any PyQt6 import in `main.py` — already handled at `main.py:2`.
+> **Windows DLL gotcha:** `import onnxruntime` must appear before any PyQt6 import in `main.py` — already handled at `main.py:2`.
 
 ## Architecture
 
@@ -36,7 +36,7 @@ Core Layer (src/core/)
 
 AI Layer (src/ai/)
   WD14Worker          — QThread for WD14 tagging
-  wd14_tagger.py      — SmilingWolf/wd-swinv2-tagger-v3 via wdtagger; general/character/rating tags
+  wd14_tagger.py      — SmilingWolf/wd-swinv2-tagger-v3 via onnxruntime; model downloaded on first use to ~/.cache/huggingface/; general/character/rating tags
   RatingSortWorker    — QThread for sorting images into SFW/NSFW folders by rating tags
 ```
 

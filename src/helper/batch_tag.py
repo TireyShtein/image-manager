@@ -9,9 +9,6 @@ Usage:
 import sys
 import os
 
-# Windows DLL order: torch must import before PyQt6 (see CLAUDE.md)
-import torch  # noqa: F401
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.core import database as db
