@@ -21,12 +21,20 @@ Three layers communicating via PyQt6 signals:
 
 ```
 UI Layer (src/ui/)
-  MainWindow          — layout host, signal wiring, file/AI action handlers
-  FolderTree          — QFileSystemModel tree; emits folder_selected / files_selected
-  GalleryView         — paginated QListView (200 images/page); lazy viewport-driven thumbnail loading
-  TagPanel / AlbumPanel — right sidebar; read/write DB directly, emit filter signals
-  ImageViewer         — modal QDialog for full-size view; opens videos via os.startfile()
-  TriageImageViewer   — ImageViewer subclass; S/T/A/D shortcuts, HUD overlay, tag/album overlays
+  MainWindow             — layout host, signal wiring, file/AI action handlers
+  FolderTree             — QFileSystemModel tree; emits folder_selected / files_selected
+  workers.py             — ScanWorker(QThread), FileOpWorker(QThread); no MainWindow coupling
+  ImageViewer            — modal QDialog for full-size view; opens videos via os.startfile()
+  triage_viewer.py       — TriageImageViewer(ImageViewer); S/T/A/D shortcuts, HUD overlay, tag/album overlays
+  TagPanel / AlbumPanel  — right sidebar; read/write DB directly, emit filter signals
+
+  gallery/               — paginated QListView sub-package
+    constants.py         — tile sizes, density config, PAGE_SIZE, _MIME_IMAGE_IDS, placeholder cache
+    workers.py           — ThumbnailLoader, FolderLoaderRunnable, _HoverCardRunnable (QRunnable pairs)
+    pager.py             — LoadResult(NamedTuple), GalleryPager; pure Python, no Qt dependency
+    model.py             — GalleryModel(QAbstractListModel); lazy pixmap loading, eviction, error overlay
+    view.py              — GalleryView(QListView); drag/drop, context menu, empty-state overlay
+    __init__.py          — re-exports GalleryView, LoadResult
 
 Core Layer (src/core/)
   database.py         — all SQLite access (functional API, no ORM)
@@ -39,15 +47,19 @@ AI Layer (src/ai/)
   wd14_tagger.py      — SmilingWolf/wd-swinv2-tagger-v3 via onnxruntime; model downloaded on first use to ~/.cache/huggingface/; general/character/rating tags
   RatingSortWorker    — QThread for sorting images into SFW/NSFW folders by rating tags
   DuplicateScanWorker — QThread; Phase 1 hashes unprocessed images, Phase 2 queries duplicate groups; emits phase_changed/progress/scan_complete/error
+
+Utils Layer (src/utils/)
+  batch_tag.py        — headless CLI batch WD14 tagger; reads QSettings config, no Qt event loop
 ```
 
 ### Threading model
 All background work runs off the GUI thread via `QThread` or `QThreadPool`; all cross-thread communication uses `pyqtSignal`.
-- **Thumbnail loading** — `ThumbnailLoader(QRunnable)` per image, lazy/viewport-driven
-- **Folder loading** — `FolderLoaderRunnable(QRunnable)`; token-based stale guard discards superseded navigations
-- **Folder scan** — `ScanWorker(QThread)`; emits `progress` and `finished_scan`
+- **Thumbnail loading** — `ThumbnailLoader(QRunnable)` per image, lazy/viewport-driven (`gallery/workers.py`)
+- **Folder loading** — `FolderLoaderRunnable(QRunnable)`; token-based stale guard discards superseded navigations (`gallery/workers.py`)
+- **Hover card** — `_HoverCardRunnable(QRunnable)`; offloads `os.path.getsize` + tag fetch (`gallery/workers.py`)
+- **Folder scan** — `ScanWorker(QThread)`; emits `progress` and `finished_scan` (`ui/workers.py`)
 - **Image decode** — `_ImageLoadRunnable(QRunnable)`; `QImage` decoded off-thread, converted to `QPixmap` on GUI thread
-- **File operations** — `FileOpWorker(QThread)`; emits `item_done`, `item_error`, `progress`, `finished_op`
+- **File operations** — `FileOpWorker(QThread)`; emits `item_done`, `item_error`, `progress`, `finished_op` (`ui/workers.py`)
 - **WD14 tagging / Rating sort / Duplicate scan** — one `QThread` worker at a time; `_is_ai_busy()` guards all three
 
 Short-lived QThreads (`ScanWorker`, `FileOpWorker`, `WD14Worker`, `RatingSortWorker`, `DuplicateScanWorker`) call `close_connection()` in a `finally` block to release the DB file handle. QThreadPool workers do not — their connections persist across reuse intentionally.
