@@ -14,6 +14,8 @@ from src.ui.album_panel import AlbumPanel
 from src.core import database as db, image_scanner, file_ops
 from src.ai.wd14_worker import WD14Worker
 from src.ai.rating_sort_worker import RatingSortWorker
+from src.ai.duplicate_worker import DuplicateScanWorker
+from src.ui.duplicates_dialog import DuplicatesDialog
 
 _CHIP_STYLE = (
     "QPushButton { color: #dde; background: rgba(80,130,255,0.20);"
@@ -88,6 +90,8 @@ class MainWindow(QMainWindow):
         self._rating_sort_worker: RatingSortWorker | None = None
         self._scan_worker: ScanWorker | None = None
         self._file_op_worker: FileOpWorker | None = None
+        self._duplicate_worker: DuplicateScanWorker | None = None
+        self._duplicates_dialog: DuplicatesDialog | None = None
         self._settings = QSettings("ImageManager", "ImageManager")
         self._sfw_mode: bool = self._settings.value("sfw_mode", False, type=bool)
         self._density: str = self._settings.value("density", "comfortable")
@@ -347,6 +351,11 @@ class MainWindow(QMainWindow):
         self._act_cancel_sort.setEnabled(False)
         self._act_cancel_sort.triggered.connect(self._cancel_rating_sort)
         ai_menu.addAction(self._act_cancel_sort)
+
+        ai_menu.addSeparator()
+        self._act_find_dupes = QAction("Find Duplicates…", self)
+        self._act_find_dupes.triggered.connect(self._run_find_duplicates)
+        ai_menu.addAction(self._act_find_dupes)
 
     def _update_filter_chips(self, tag_names: list[str], mode: str = "AND"):
         """Rebuild the filter chip bar. Pass empty list to hide it."""
@@ -1005,6 +1014,8 @@ class MainWindow(QMainWindow):
             return True
         if self._rating_sort_worker and self._rating_sort_worker.isRunning():
             return True
+        if self._duplicate_worker and self._duplicate_worker.isRunning():
+            return True
         return False
 
     def _run_wd14_tagging(self):
@@ -1150,4 +1161,63 @@ class MainWindow(QMainWindow):
         )
         self._gallery.load_folder(self._current_folder)
         self._folder_tree.set_root(self._current_folder)
+        self._tag_refresh_timer.start()
+
+    # ------------------------------------------------------------------ Find Duplicates
+
+    def _run_find_duplicates(self):
+        if self._is_ai_busy():
+            QMessageBox.information(self, "Busy", "Another AI task is already running.")
+            return
+
+        self._act_find_dupes.setEnabled(False)
+        self._progress.setRange(0, 0)  # indeterminate
+        self._progress.setVisible(True)
+        self._status_label.setText("Scanning for duplicates…")
+
+        self._duplicate_worker = DuplicateScanWorker(self)
+        self._duplicate_worker.phase_changed.connect(self._on_dupes_phase)
+        self._duplicate_worker.progress.connect(self._on_dupes_progress)
+        self._duplicate_worker.scan_complete.connect(self._on_dupes_finished)
+        self._duplicate_worker.error.connect(self._on_dupes_error)
+        self._duplicate_worker.finished.connect(self._on_dupes_thread_finished)
+        self._duplicate_worker.start()
+
+    def _on_dupes_phase(self, msg: str):
+        self._status_label.setText(msg)
+
+    def _on_dupes_progress(self, current: int, total: int):
+        self._progress.setRange(0, total)
+        self._progress.setValue(current)
+
+    def _on_dupes_finished(self, groups: list):
+        self._progress.setVisible(False)
+        self._act_find_dupes.setEnabled(True)
+        self._status_label.setText(
+            f"Duplicate scan complete: {len(groups)} group(s) found."
+            if groups else "No duplicate images found."
+        )
+        if self._duplicates_dialog is None:
+            self._duplicates_dialog = DuplicatesDialog(self)
+            self._duplicates_dialog.duplicates_resolved.connect(self._on_duplicates_resolved)
+        self._duplicates_dialog.load_groups(groups)
+        self._duplicates_dialog.show()
+        self._duplicates_dialog.raise_()
+        self._duplicates_dialog.activateWindow()
+
+    def _on_dupes_error(self, msg: str):
+        self._progress.setVisible(False)
+        self._act_find_dupes.setEnabled(True)
+        self._status_label.setText(f"Duplicate scan error: {msg}")
+        QMessageBox.warning(self, "Duplicate Scan Error", msg)
+
+    def _on_dupes_thread_finished(self):
+        """Safety net: re-enables action if scan_complete was never emitted."""
+        self._act_find_dupes.setEnabled(True)
+        if self._progress.isVisible():
+            self._progress.setVisible(False)
+
+    def _on_duplicates_resolved(self, deleted_ids: list):
+        for iid in deleted_ids:
+            self._gallery.remove_image(iid)
         self._tag_refresh_timer.start()

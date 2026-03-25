@@ -21,7 +21,7 @@ def _ensure_subdir(thumb_path: str) -> None:
 
 
 def get_thumbnail_path(image_path: str) -> str:
-    key = hashlib.md5(image_path.encode()).hexdigest()
+    key = hashlib.md5(os.path.normpath(image_path).encode()).hexdigest()
     return os.path.join(CACHE_DIR, key[:2], key + '.jpg')
 
 

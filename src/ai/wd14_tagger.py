@@ -42,6 +42,14 @@ def _download_file(filename: str) -> Path:
     from huggingface_hub import hf_hub_download
     from huggingface_hub.errors import LocalEntryNotFoundError, OfflineModeIsEnabled
     try:
+        # Try local cache first — avoids HF network round-trip and token warning
+        return Path(hf_hub_download(repo_id=_REPO_ID, filename=filename,
+                                    local_files_only=True))
+    except LocalEntryNotFoundError:
+        pass  # Not cached yet — fall through to download
+    except OfflineModeIsEnabled:
+        pass  # Same — fall through, will fail below with clear message
+    try:
         return Path(hf_hub_download(repo_id=_REPO_ID, filename=filename))
     except OfflineModeIsEnabled:
         raise RuntimeError(

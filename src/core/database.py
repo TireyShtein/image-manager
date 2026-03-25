@@ -154,11 +154,47 @@ def init_db():
             pass  # column already exists
         conn.execute("CREATE INDEX IF NOT EXISTS idx_image_content_hash ON images(content_hash)")
 
+        # Migration: normalize all stored paths to OS-native separators.
+        # Fixes rows inserted via Qt (forward slashes on Windows) vs os.walk (backslashes).
+        # Guard: on Windows, no legitimately-normalized path contains a forward slash.
+        # This check is O(1) on subsequent startups once all paths are clean.
+        if os.sep != '/' and conn.execute(
+            "SELECT 1 FROM images WHERE path LIKE '%/%' LIMIT 1"
+        ).fetchone():
+            rows = conn.execute("SELECT id, path FROM images").fetchall()
+            for row in rows:
+                normalized = os.path.normpath(row["path"])
+                if normalized != row["path"]:
+                    try:
+                        conn.execute("UPDATE images SET path = ? WHERE id = ?",
+                                     (normalized, row["id"]))
+                    except sqlite3.IntegrityError:
+                        # Collision: a row with the normalized path already exists.
+                        # Merge tags and album memberships into the surviving row
+                        # before deleting, to avoid silent data loss.
+                        surviving = conn.execute(
+                            "SELECT id FROM images WHERE path = ?", (normalized,)
+                        ).fetchone()
+                        if surviving:
+                            sid = surviving["id"]
+                            conn.execute(
+                                "INSERT OR IGNORE INTO image_tags (image_id, tag_id) "
+                                "SELECT ?, tag_id FROM image_tags WHERE image_id = ?",
+                                (sid, row["id"]),
+                            )
+                            conn.execute(
+                                "INSERT OR IGNORE INTO album_images (album_id, image_id, position) "
+                                "SELECT album_id, ?, position FROM album_images WHERE image_id = ?",
+                                (sid, row["id"]),
+                            )
+                        conn.execute("DELETE FROM images WHERE id = ?", (row["id"],))
+
 
 # --- Images ---
 
 def add_image(path: str, filename: str, width: int = None, height: int = None,
               file_size: int = None) -> int:
+    path = os.path.normpath(path)
     now = datetime.now().isoformat()
     with get_connection() as conn:
         cur = conn.execute(
@@ -178,6 +214,7 @@ def get_image(image_id: int) -> Optional[sqlite3.Row]:
 
 
 def get_image_by_path(path: str) -> Optional[sqlite3.Row]:
+    path = os.path.normpath(path)
     with get_connection() as conn:
         return conn.execute("SELECT * FROM images WHERE path = ?", (path,)).fetchone()
 
@@ -196,7 +233,7 @@ def get_images_batch(image_ids: list[int]) -> dict:
 
 
 def get_images_in_folder(folder: str) -> list:
-    folder = folder.rstrip('/\\') + os.sep
+    folder = os.path.normpath(folder) + os.sep
     with get_connection() as conn:
         return conn.execute(
             "SELECT * FROM images WHERE path LIKE ? ORDER BY filename",
@@ -205,6 +242,7 @@ def get_images_in_folder(folder: str) -> list:
 
 
 def update_image_path(image_id: int, new_path: str):
+    new_path = os.path.normpath(new_path)
     with get_connection() as conn:
         conn.execute(
             "UPDATE images SET path = ?, filename = ?, date_modified = ? WHERE id = ?",
@@ -241,6 +279,7 @@ def get_or_create_images_batch(paths: list[str]) -> tuple[list, int]:
     """
     if not paths:
         return [], 0
+    paths = [os.path.normpath(p) for p in paths]
     now = datetime.now().isoformat()
     CHUNK = 500
     all_rows = []
@@ -565,7 +604,7 @@ def get_tags_for_images(image_ids: list) -> list:
 def get_images_with_ratings_in_folder(folder: str) -> list:
     """Returns rows (id, path, rating) for images directly inside folder (non-recursive).
     rating is the rating:* tag name, or None if untagged."""
-    folder_prefix = folder.rstrip('/\\') + os.sep
+    folder_prefix = os.path.normpath(folder) + os.sep
     with get_connection() as conn:
         return conn.execute(
             "SELECT i.id, i.path, "
@@ -811,3 +850,58 @@ def rename_saved_filter(filter_id: int, new_name: str):
         conn.execute(
             "UPDATE saved_filters SET name = ? WHERE id = ?", (new_name, filter_id)
         )
+
+
+# ── Duplicate detection ───────────────────────────────────────────────────────
+
+def get_images_without_hash() -> list:
+    """Return images that have not yet been content-hashed.
+
+    Checks both NULL (migrated DBs via ALTER TABLE) and empty string (new inserts
+    where hashing failed at registration time).
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, path, filename FROM images "
+            "WHERE content_hash IS NULL OR content_hash = '' "
+            "ORDER BY filename"
+        ).fetchall()
+    return rows
+
+
+def update_content_hash(image_id: int, content_hash: str) -> None:
+    """Update the content_hash for a single image row."""
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE images SET content_hash = ? WHERE id = ?",
+            (content_hash, image_id),
+        )
+
+
+def get_duplicate_groups() -> list[list]:
+    """Return groups of images that share the same content_hash.
+
+    Each group is a list of image rows (dicts-compatible sqlite3.Row objects)
+    sorted by id ASC (lowest id = oldest / first added).
+    Only hashes with 2+ images are included; empty/null hashes are excluded.
+    """
+    from collections import defaultdict
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT i.id, i.path, i.filename, i.file_size,
+                   i.width, i.height, i.date_added, i.content_hash
+            FROM images i
+            INNER JOIN (
+                SELECT content_hash FROM images
+                WHERE content_hash IS NOT NULL AND content_hash != ''
+                GROUP BY content_hash HAVING COUNT(*) >= 2
+            ) dupe_hashes ON i.content_hash = dupe_hashes.content_hash
+            ORDER BY i.content_hash, i.id
+            """
+        ).fetchall()
+
+    groups: dict[str, list] = defaultdict(list)
+    for row in rows:
+        groups[row["content_hash"]].append(row)
+    return [g for g in groups.values() if len(g) >= 2]

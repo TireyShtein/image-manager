@@ -38,6 +38,7 @@ AI Layer (src/ai/)
   WD14Worker          — QThread for WD14 tagging
   wd14_tagger.py      — SmilingWolf/wd-swinv2-tagger-v3 via onnxruntime; model downloaded on first use to ~/.cache/huggingface/; general/character/rating tags
   RatingSortWorker    — QThread for sorting images into SFW/NSFW folders by rating tags
+  DuplicateScanWorker — QThread; Phase 1 hashes unprocessed images, Phase 2 queries duplicate groups; emits phase_changed/progress/scan_complete/error
 ```
 
 ### Threading model
@@ -47,9 +48,9 @@ All background work runs off the GUI thread via `QThread` or `QThreadPool`; all 
 - **Folder scan** — `ScanWorker(QThread)`; emits `progress` and `finished_scan`
 - **Image decode** — `_ImageLoadRunnable(QRunnable)`; `QImage` decoded off-thread, converted to `QPixmap` on GUI thread
 - **File operations** — `FileOpWorker(QThread)`; emits `item_done`, `item_error`, `progress`, `finished_op`
-- **WD14 tagging / Rating sort** — one `QThread` worker at a time, cancellable
+- **WD14 tagging / Rating sort / Duplicate scan** — one `QThread` worker at a time; `_is_ai_busy()` guards all three
 
-Short-lived QThreads (`ScanWorker`, `FileOpWorker`, `WD14Worker`, `RatingSortWorker`) call `close_connection()` in a `finally` block to release the DB file handle. QThreadPool workers do not — their connections persist across reuse intentionally.
+Short-lived QThreads (`ScanWorker`, `FileOpWorker`, `WD14Worker`, `RatingSortWorker`, `DuplicateScanWorker`) call `close_connection()` in a `finally` block to release the DB file handle. QThreadPool workers do not — their connections persist across reuse intentionally.
 
 ## Database
 
@@ -60,6 +61,8 @@ SQLite with WAL journal mode, foreign keys, `PRAGMA busy_timeout = 5000`. All ac
 **Indexes:** `images(path)`, `tags(name)`, `image_tags(tag_id)`, `images(content_hash)`, `images(filename)`
 
 **Connection model:** `get_connection()` is a `@contextmanager` backed by `threading.local()`. Each thread gets one connection created on first use and reused for all subsequent calls. Commits on normal exit, rolls back on exception. Usage: `with get_connection() as conn:`.
+
+**Path normalization:** All path arguments in DB functions are normalized via `os.path.normpath()` before any query or insert (`add_image`, `get_image_by_path`, `get_images_in_folder`, `update_image_path`, `get_images_with_ratings_in_folder`, `get_or_create_images_batch`). `thumbnail_cache.get_thumbnail_path` also normalizes before computing the MD5 cache key. `init_db()` includes a one-time migration that normalizes all existing rows and merges tags/albums before removing collision duplicates; guarded by `LIKE '%/%' LIMIT 1` so it is O(1) on clean DBs.
 
 **Tag recovery:** When a new path is inserted, the DB tries to recover an orphaned record (preserving tags/albums/AI results) via (1) SHA-256 content-hash match or (2) unambiguous filename match whose old path no longer exists.
 
@@ -75,6 +78,9 @@ SQLite with WAL journal mode, foreign keys, `PRAGMA busy_timeout = 5000`. All ac
 - `get_images_by_tags_or(tag_names)` — images with ANY given tag
 - `filter_out_images_with_tags(image_ids, excluded_tags)` — used by SFW Mode
 - `get_image_ids_with_rating_tag(image_ids)` — set of IDs that already have a `rating:*` tag
+- `get_images_without_hash()` — images with NULL or empty `content_hash`
+- `update_content_hash(image_id, hash)` — write computed hash for one image
+- `get_duplicate_groups()` — returns `list[list[Row]]` grouped by `content_hash`; excludes empty-string hashes to prevent false positives
 - `get_all_tags_with_counts()` — all tags with per-tag image counts
 - `get_all_albums_with_counts()` — all albums with image counts (single LEFT JOIN GROUP BY)
 - `rename_tag(old, new)` — propagates via shared `tag_id`; raises `IntegrityError` on duplicate
@@ -112,6 +118,7 @@ Full-screen image review with single-key shortcuts:
 ### AI
 - **WD14 tagging (`Ctrl+T`)** — `SmilingWolf/wd-swinv2-tagger-v3`; outputs general, character, and rating tags; resumable (skips already-tagged images)
 - **Sort SFW/NSFW** — batch-moves images by existing rating tags into user-chosen folders; preview dialog shown before execution
+- **Find Duplicates (AI menu)** — two-phase scan: hashes unprocessed images (SHA-256 of first 64KB + size), then finds groups with identical `content_hash`; `DuplicatesDialog` shows card-per-image with async thumbnails, radio "Keep this" selection, "Keep Oldest/Newest" shortcuts, and Send to Trash / Delete Permanently actions; resolved ids removed from gallery via `duplicates_resolved` signal
 
 ### File Operations
 - Move and copy run on `FileOpWorker(QThread)`; confirmation dialog before dispatch
