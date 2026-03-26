@@ -6,7 +6,8 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
                               QSplitter, QScrollArea, QGridLayout, QWidget)
 from PyQt6.QtCore import (Qt, QRectF, QRunnable, QThreadPool, QObject,
                           pyqtSignal, pyqtSlot, QTimer, QEvent, QStringListModel,
-                          QPoint, QSettings)
+                          QPoint)
+from src.utils import get_settings
 from PyQt6.QtGui import (QPixmap, QImage, QFont, QWheelEvent, QKeyEvent,
                          QKeySequence, QShortcut, QCursor)
 import subprocess
@@ -96,7 +97,7 @@ class ImageViewer(QDialog):
         self._splitter.splitterMoved.connect(self._on_splitter_moved)
 
         # Restore persisted splitter position
-        state = QSettings("ImageManager", "ImageManager").value("viewer_splitter_state")
+        state = get_settings().value("viewer_splitter_state")
         if state:
             self._splitter.restoreState(state)
 
@@ -375,7 +376,7 @@ class ImageViewer(QDialog):
 
     def closeEvent(self, event):
         if hasattr(self, '_splitter'):
-            QSettings("ImageManager", "ImageManager").setValue(
+            get_settings().setValue(
                 "viewer_splitter_state", self._splitter.saveState()
             )
         super().closeEvent(event)

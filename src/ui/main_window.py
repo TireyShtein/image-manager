@@ -5,7 +5,8 @@ from PyQt6.QtWidgets import (QMainWindow, QPushButton, QWidget, QHBoxLayout, QVB
                               QSplitter, QStatusBar, QProgressBar, QLabel,
                               QFileDialog, QMessageBox, QInputDialog, QMenu,
                               QApplication, QDialog, QStyle)
-from PyQt6.QtCore import Qt, QThread, QSettings, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
+from src.utils import get_settings
 from PyQt6.QtGui import QAction, QActionGroup
 from src.ui.folder_tree import FolderTree
 from src.ui.gallery import GalleryView
@@ -48,7 +49,7 @@ class MainWindow(QMainWindow):
         self._duplicates_dialog: DuplicatesDialog | None = None
         self._wd14_folder_mode: bool = False
         self._wd14_eta_start: float | None = None
-        self._settings = QSettings("ImageManager", "ImageManager")
+        self._settings = get_settings()
         self._sfw_mode: bool = self._settings.value("sfw_mode", False, type=bool)
         self._density: str = self._settings.value("density", "comfortable")
         self._status_prefix = "Ready"

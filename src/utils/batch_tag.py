@@ -1,5 +1,4 @@
-"""Batch WD14 tagger — pages 12-39 of the current gallery folder.
-
+"""
 Calls wd14_tagger.classify() directly without a Qt event loop,
 so it works in any terminal (no display/GUI required).
 
@@ -27,9 +26,8 @@ def main():
     db.init_db()
 
     # Resolve folder from QSettings (last folder opened in the app)
-    # Import PyQt6 only for settings — no QApplication needed
-    from PyQt6.QtCore import QSettings
-    settings = QSettings("ImageManager", "ImageManager")
+    from src.utils import get_settings
+    settings = get_settings()
     folder = settings.value("last_folder", "")
     if not folder or not os.path.isdir(folder):
         print(f"[ERROR] No valid last_folder in QSettings: {folder!r}")
