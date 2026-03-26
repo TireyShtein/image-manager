@@ -413,16 +413,25 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ Slots
 
     def _restore_last_folder(self):
-        folder = self._settings.value("last_folder", "")
-        if folder and os.path.isdir(folder):
-            self._current_folder = folder
-            self._folder_tree.set_root(folder)
-            self._status_prefix = f"Folder: {os.path.basename(folder)}"
-            self._status_label.setToolTip(folder)
-            self._gallery.load_folder(folder)
-            self._status_label.setText(self._status_prefix)
-            self._update_go_up_button()
-            self._add_recent_folder(folder)
+        saved = self._settings.value("last_folder", "")
+        if not saved:
+            # True first launch — last_folder key was never written.
+            # Clear any stale recent-folder entries that may have been imported
+            # from another machine or left over from a reinstall.
+            self._recent_folders = []
+            self._settings.setValue("recent_folders", [])
+            self._gallery.set_recent_folders([])
+        folder = saved if saved and os.path.isdir(saved) else os.path.expanduser("~/Pictures")
+        if not os.path.isdir(folder):
+            return
+        self._current_folder = folder
+        self._folder_tree.set_root(folder)
+        self._status_prefix = f"Folder: {os.path.basename(folder)}"
+        self._status_label.setToolTip(folder)
+        self._gallery.load_folder(folder)
+        self._status_label.setText(self._status_prefix)
+        self._update_go_up_button()
+        self._add_recent_folder(folder)
 
     def _open_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Open Folder")

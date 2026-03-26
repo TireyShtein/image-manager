@@ -1,0 +1,57 @@
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+
+# ── Virtual environment ───────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Distribution / packaging ──────────────────────────────────
+dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# ── PyInstaller intermediate work files ───────────────────────
+# build/ImageManager/ is created by PyInstaller during the build.
+# build/build.bat, build/ImageManager.spec, build/runtime_hook_onnxruntime.py
+# are source files and ARE tracked.
+build/ImageManager/
+
+# ── Testing & coverage ────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Type checkers & linters ───────────────────────────────────
+.mypy_cache/
+.ruff_cache/
+
+# ── IDE / editor ──────────────────────────────────────────────
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ── OS artefacts ──────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Environment / secrets ─────────────────────────────────────
+.env
+.env.*
+
+# ── Logs ──────────────────────────────────────────────────────
+*.log
+
+# ── Project-specific ──────────────────────────────────────────
+# User data directory (images, database, thumbnails)
+data/
+
+# Claude Code local session files (CLAUDE.md is tracked)
+.claude/
