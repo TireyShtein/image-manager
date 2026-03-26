@@ -53,5 +53,6 @@ desktop.ini
 # User data directory (images, database, thumbnails)
 data/
 
-# Claude Code local session files (CLAUDE.md is tracked)
+# Claude Code local session files
 .claude/
+CLAUDE.md
