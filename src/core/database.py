@@ -649,6 +649,48 @@ def get_image_ids_with_rating_tag(image_ids: list[int]) -> set[int]:
         return {row[0] for row in rows}
 
 
+def get_folder_tag_counts(folder: str) -> tuple[int, int]:
+    """Return (total_images, already_tagged) for a folder (recursive).
+
+    'already_tagged' means the image has any rating:* tag.
+    Uses non-correlated subquery so the image_tags(tag_id) index is used.
+    """
+    prefix = os.path.normpath(folder) + os.sep + "%"
+    with get_connection() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM images WHERE path LIKE ?", (prefix,)
+        ).fetchone()[0]
+        tagged = conn.execute(
+            "SELECT COUNT(*) FROM images "
+            "WHERE path LIKE ? "
+            "AND id IN ("
+            "    SELECT it.image_id FROM image_tags it"
+            "    JOIN tags t ON t.id = it.tag_id"
+            "    WHERE t.name LIKE 'rating:%'"
+            ")",
+            (prefix,),
+        ).fetchone()[0]
+    return total, tagged
+
+
+def get_untagged_images_in_folder(folder: str, limit: int) -> list:
+    """Return up to *limit* image rows that have no rating:* tag, ordered by filename."""
+    prefix = os.path.normpath(folder) + os.sep + "%"
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT i.* FROM images i "
+            "WHERE i.path LIKE ? "
+            "AND i.id NOT IN ("
+            "    SELECT it.image_id FROM image_tags it"
+            "    JOIN tags t ON t.id = it.tag_id"
+            "    WHERE t.name LIKE 'rating:%'"
+            ") "
+            "ORDER BY i.filename "
+            "LIMIT ?",
+            (prefix, limit),
+        ).fetchall()
+
+
 def get_images_by_tag(tag_name: str) -> list:
     with get_connection() as conn:
         return conn.execute(

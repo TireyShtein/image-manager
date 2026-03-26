@@ -11,9 +11,10 @@ class WD14Worker(QThread):
     error = pyqtSignal(int, str)              # (image_id, message)
     finished_all = pyqtSignal(int, int, int)  # (tagged, skipped, errors)
 
-    def __init__(self, image_ids: list[int], parent=None):
+    def __init__(self, image_ids: list[int], prefetched_rows: list | None = None, parent=None):
         super().__init__(parent)
         self.image_ids = image_ids
+        self._prefetched_rows = prefetched_rows
         self._cancelled = False
 
     def cancel(self):
@@ -30,8 +31,12 @@ class WD14Worker(QThread):
                 self.error.emit(0, f"Failed to load WD14 model: {e}")
                 self.finished_all.emit(0, 0, total)
                 return
-            image_map = db.get_images_batch(self.image_ids)
-            already_rated = db.get_image_ids_with_rating_tag(self.image_ids)
+            if self._prefetched_rows is not None:
+                image_map = {row["id"]: row for row in self._prefetched_rows}
+                already_rated: set[int] = set()  # SQL pre-filtered; all rows are untagged
+            else:
+                image_map = db.get_images_batch(self.image_ids)
+                already_rated = db.get_image_ids_with_rating_tag(self.image_ids)
             tagged, skipped, errors = 0, 0, 0
             for i, image_id in enumerate(self.image_ids):
                 if self._cancelled:

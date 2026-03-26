@@ -1,4 +1,5 @@
 import os
+import time
 import json
 from PyQt6.QtWidgets import (QMainWindow, QPushButton, QWidget, QHBoxLayout, QVBoxLayout,
                               QSplitter, QStatusBar, QProgressBar, QLabel,
@@ -17,7 +18,9 @@ from src.ai.wd14_worker import WD14Worker
 from src.ai.rating_sort_worker import RatingSortWorker
 from src.ai.duplicate_worker import DuplicateScanWorker
 from src.ui.duplicates_viewer import DuplicatesDialog
+from src.ui.wd14_folder_dialog import WD14FolderTagDialog, _format_eta
 from src.ui.workers import ScanWorker, FileOpWorker
+
 
 _CHIP_STYLE = (
     "QPushButton { color: #dde; background: rgba(80,130,255,0.20);"
@@ -43,6 +46,8 @@ class MainWindow(QMainWindow):
         self._file_op_worker: FileOpWorker | None = None
         self._duplicate_worker: DuplicateScanWorker | None = None
         self._duplicates_dialog: DuplicatesDialog | None = None
+        self._wd14_folder_mode: bool = False
+        self._wd14_eta_start: float | None = None
         self._settings = QSettings("ImageManager", "ImageManager")
         self._sfw_mode: bool = self._settings.value("sfw_mode", False, type=bool)
         self._density: str = self._settings.value("density", "comfortable")
@@ -292,6 +297,10 @@ class MainWindow(QMainWindow):
         self._act_cancel_wd14.setEnabled(False)
         self._act_cancel_wd14.triggered.connect(self._cancel_wd14_tagging)
         ai_menu.addAction(self._act_cancel_wd14)
+
+        self._act_wd14_folder = QAction("Tag All in Folder…", self)
+        self._act_wd14_folder.triggered.connect(self._run_wd14_folder_tagging)
+        ai_menu.addAction(self._act_wd14_folder)
 
         ai_menu.addSeparator()
         self._act_sort = QAction("Sort into SFW/NSFW by Tags…", self)
@@ -986,6 +995,7 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"Tagging {len(image_ids)} image(s) with WD14…")
         self._act_cancel_wd14.setEnabled(True)
         self._act_wd14.setEnabled(False)
+        self._act_wd14_folder.setEnabled(False)
 
         self._wd14_worker = WD14Worker(image_ids)
         self._wd14_worker.progress.connect(self._on_wd14_progress)
@@ -999,12 +1009,72 @@ class MainWindow(QMainWindow):
         if self._wd14_worker:
             self._wd14_worker.cancel()
 
+    def _run_wd14_folder_tagging(self):
+        if not self._current_folder:
+            QMessageBox.information(self, "No Folder", "Open a folder first.")
+            return
+        if self._is_ai_busy():
+            QMessageBox.information(self, "Busy", "Another AI task is already running.")
+            return
+
+        total, already_tagged = db.get_folder_tag_counts(self._current_folder)
+        untagged = total - already_tagged
+        if untagged == 0:
+            QMessageBox.information(
+                self, "Nothing to Tag",
+                f"All {total:,} images in this folder already have a rating tag.",
+            )
+            return
+
+        dlg = WD14FolderTagDialog(self._current_folder, total, already_tagged, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        rows = db.get_untagged_images_in_folder(self._current_folder, dlg.batch_size)
+        image_ids = [r["id"] for r in rows]
+
+        self._wd14_folder_mode = True
+        self._wd14_eta_start = None
+        self._set_counter_progress_visible(True)
+        self._progress.setRange(0, len(image_ids))
+        self._progress.setValue(0)
+        self._progress_counter.setText(f"0 / {len(image_ids)}")
+        self._status_label.setText("WD14: loading model…")
+        self._act_cancel_wd14.setEnabled(True)
+        self._act_wd14.setEnabled(False)
+        self._act_wd14_folder.setEnabled(False)
+
+        self._wd14_worker = WD14Worker(image_ids, prefetched_rows=rows)
+        self._wd14_worker.progress.connect(self._on_wd14_progress)
+        self._wd14_worker.image_done.connect(self._on_wd14_done)
+        self._wd14_worker.error.connect(self._on_wd14_error)
+        self._wd14_worker.finished_all.connect(self._on_wd14_finished)
+        self._wd14_worker.finished.connect(self._on_wd14_thread_finished)
+        self._wd14_worker.start()
+
     def _on_wd14_progress(self, current: int, total: int):
         self._progress.setValue(current)
         self._progress_counter.setText(f"{current} / {total}")
+        if self._wd14_folder_mode:
+            # progress(i, total) fires at the START of iteration i, BEFORE classify().
+            # So `current` images have already finished when this signal arrives.
+            completed = current
+            if completed == 0:
+                # Record the moment the first image starts processing (after model load).
+                if self._wd14_eta_start is None:
+                    self._wd14_eta_start = time.monotonic()
+                self._status_label.setText(f"WD14: 0/{total} — starting…")
+            elif self._wd14_eta_start is not None:
+                elapsed = time.monotonic() - self._wd14_eta_start
+                rate = completed / elapsed if elapsed > 0 else 0
+                eta_s = (total - completed) / rate if rate > 0 else float("inf")
+                self._status_label.setText(
+                    f"WD14: {completed}/{total} done — ETA {_format_eta(eta_s)}"
+                )
 
     def _on_wd14_done(self, image_id: int, filename: str, tags: list):
-        self._status_label.setText(f"Tagged: {filename} (+{len(tags)} tags)")
+        if not self._wd14_folder_mode:
+            self._status_label.setText(f"Tagged: {filename} (+{len(tags)} tags)")
         self._tag_refresh_timer.start()
 
     def _on_wd14_error(self, image_id: int, msg: str):
@@ -1014,6 +1084,9 @@ class MainWindow(QMainWindow):
         """Safety net: hides progress if finished_all never emitted (e.g. worker crash)."""
         self._act_cancel_wd14.setEnabled(False)
         self._act_wd14.setEnabled(True)
+        self._act_wd14_folder.setEnabled(True)
+        self._wd14_folder_mode = False
+        self._wd14_eta_start = None
         if self._progress.isVisible():
             self._set_counter_progress_visible(False)
 
@@ -1021,6 +1094,9 @@ class MainWindow(QMainWindow):
         self._set_counter_progress_visible(False)
         self._act_cancel_wd14.setEnabled(False)
         self._act_wd14.setEnabled(True)
+        self._act_wd14_folder.setEnabled(True)
+        self._wd14_folder_mode = False
+        self._wd14_eta_start = None
         parts = [f"{tagged} tagged"]
         if skipped:
             parts.append(f"{skipped} skipped (already tagged)")
