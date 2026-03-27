@@ -34,6 +34,21 @@ _init_lock = threading.Lock()
 _session = None
 _tags: list[tuple[str, int]] | None = None  # [(name, category), ...]
 _input_name: str | None = None
+_active_provider: str = "CPUExecutionProvider"  # set from session.get_providers()[0] after init
+
+_PROVIDER_LABELS: dict[str, str] = {
+    "CUDAExecutionProvider": "CUDA",
+    "DmlExecutionProvider":  "DirectML",
+    "CPUExecutionProvider":  "CPU",
+}
+
+
+def get_active_provider() -> str:
+    return _active_provider
+
+
+def get_active_provider_label() -> str:
+    return _PROVIDER_LABELS[_active_provider]
 
 
 def _download_file(filename: str) -> Path:
@@ -73,8 +88,16 @@ def _load_tags() -> list[tuple[str, int]]:
         return [(row["name"], int(row["category"])) for row in csv.DictReader(f)]
 
 
+def _select_providers(ort) -> list[str]:
+    """Return priority-ordered provider list based on what the installed package ships."""
+    available = set(ort.get_available_providers())
+    priority = ["CUDAExecutionProvider", "DmlExecutionProvider", "CPUExecutionProvider"]
+    chosen = [p for p in priority if p in available]
+    return chosen or ["CPUExecutionProvider"]
+
+
 def _get_session():
-    global _session, _tags, _input_name
+    global _session, _tags, _input_name, _active_provider
     if _session is not None:
         return _session, _tags, _input_name
     with _init_lock:
@@ -84,24 +107,41 @@ def _get_session():
         model_path = _download_file(_MODEL_FILE)
         tags = _load_tags()
 
+        providers = _select_providers(ort)
+        candidate = providers[0]  # best candidate (may silently fall back to CPU)
+
         opts = ort.SessionOptions()
-        opts.inter_op_num_threads = 1
-        opts.intra_op_num_threads = 4
+        if candidate == "CPUExecutionProvider":
+            opts.inter_op_num_threads = 1
+            opts.intra_op_num_threads = 4
+        else:
+            # GPU path: keep CPU threads low; GPU handles the heavy ops
+            opts.inter_op_num_threads = 2
+            opts.intra_op_num_threads = 2
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
         session = ort.InferenceSession(
             model_path,
             sess_options=opts,
-            providers=["CPUExecutionProvider"],
+            providers=providers,
         )
         input_name = session.get_inputs()[0].name
 
+        # Use actual active provider — ORT may silently fall back if init fails (e.g. CUDA without toolkit)
+        actual = session.get_providers()[0]
+        if actual != candidate:
+            logger.warning("WD14: requested %s not available, fell back to %s", candidate, actual)
+            print(f"[WD14] Warning: {candidate} not available, using {actual}")
+        else:
+            print(f"[WD14] Using provider: {actual}")
+
         # Assign atomically — _session last so it acts as the ready guard
+        _active_provider = actual
         _tags = tags
         _input_name = input_name
         _session = session
         print(f"[WD14] ONNX session loaded (input={input_name!r}, tags={len(tags)})")
-        logger.info("WD14 ONNX session loaded (input=%r)", input_name)
+        logger.info("WD14 ONNX session loaded (input=%r, provider=%s)", input_name, actual)
     return _session, _tags, _input_name
 
 
@@ -173,11 +213,12 @@ def load_model() -> None:
 
 def release_session() -> None:
     """Release the ONNX session and free model memory (~100 MB)."""
-    global _session, _tags, _input_name
+    global _session, _tags, _input_name, _active_provider
     with _init_lock:
         _session = None
         _tags = None
         _input_name = None
+        _active_provider = "CPUExecutionProvider"
 
 
 def classify(image_path: str) -> list[tuple[str, float]]:

@@ -18,6 +18,7 @@ from src.core import database as db, image_scanner, file_ops
 from src.ai.wd14_worker import WD14Worker
 from src.ai.rating_sort_worker import RatingSortWorker
 from src.ai.duplicate_worker import DuplicateScanWorker
+from src.ai import wd14_tagger
 from src.ui.duplicates_viewer import DuplicatesDialog
 from src.ui.wd14_folder_dialog import WD14FolderTagDialog, _format_eta
 from src.ui.workers import ScanWorker, FileOpWorker
@@ -1073,18 +1074,21 @@ class MainWindow(QMainWindow):
                 # Record the moment the first image starts processing (after model load).
                 if self._wd14_eta_start is None:
                     self._wd14_eta_start = time.monotonic()
-                self._status_label.setText(f"WD14: 0/{total} — starting…")
+                _lbl = wd14_tagger.get_active_provider_label()
+                self._status_label.setText(f"WD14 [{_lbl}]: 0/{total} — starting…")
             elif self._wd14_eta_start is not None:
                 elapsed = time.monotonic() - self._wd14_eta_start
                 rate = completed / elapsed if elapsed > 0 else 0
                 eta_s = (total - completed) / rate if rate > 0 else float("inf")
+                _lbl = wd14_tagger.get_active_provider_label()
                 self._status_label.setText(
-                    f"WD14: {completed}/{total} done — ETA {_format_eta(eta_s)}"
+                    f"WD14 [{_lbl}]: {completed}/{total} done — ETA {_format_eta(eta_s)}"
                 )
 
     def _on_wd14_done(self, image_id: int, filename: str, tags: list):
         if not self._wd14_folder_mode:
-            self._status_label.setText(f"Tagged: {filename} (+{len(tags)} tags)")
+            _lbl = wd14_tagger.get_active_provider_label()
+            self._status_label.setText(f"Tagged [{_lbl}]: {filename} (+{len(tags)} tags)")
         self._tag_refresh_timer.start()
 
     def _on_wd14_error(self, image_id: int, msg: str):

@@ -1,20 +1,48 @@
 @echo off
 setlocal EnableDelayedExpansion
 
+
+:: ── GPU BACKEND ARGUMENT PARSING ─────────────────────────────
+::
+::  Usage:  build.bat [--gpu cpu|directml|cuda]
+::  Default: cpu
+::
+::  cpu        — onnxruntime (CPU only, smallest build)
+::  directml   — onnxruntime-directml (any Windows DX12 GPU: NVIDIA / AMD / Intel)
+::  cuda       — onnxruntime-gpu (NVIDIA + CUDA 12 + cuDNN required system-wide)
+::
+::  Output folder is labelled by backend:
+::    dist\ImageManager\           (cpu)
+::    dist\ImageManager-directml\  (directml)
+::    dist\ImageManager-cuda\      (cuda)
+
+set "GPU_BACKEND=cpu"
+set "DIST_SUFFIX="
+set "_PARSE_NEXT="
+for %%A in (%*) do (
+    if defined _PARSE_NEXT (
+        set "GPU_BACKEND=%%A"
+        set "_PARSE_NEXT="
+    ) else if /I "%%A"=="--gpu" (
+        set "_PARSE_NEXT=1"
+    )
+)
+if /I "!GPU_BACKEND!"=="directml" set "DIST_SUFFIX=-directml"
+if /I "!GPU_BACKEND!"=="cuda"     set "DIST_SUFFIX=-cuda"
+
+
 :: ============================================================
 ::  build\build.bat — Build ImageManager distributable with PyInstaller
 ::
-::  Output: dist\ImageManager\ImageManager.exe  (+ all DLLs)
+::  Output: dist\ImageManager!DIST_SUFFIX!\ImageManager.exe  (+ all DLLs)
 ::
-::  Usage:  Double-click  OR  run from anywhere — the script
-::          changes to the repo root automatically via %~dp0.
 ::  Requires the .venv virtual environment to already exist.
 ::  If PyInstaller is missing it will be installed automatically.
 :: ============================================================
 
 echo.
 echo ============================================================
-echo   ImageManager ^| PyInstaller build
+echo   ImageManager ^| PyInstaller build  [GPU: !GPU_BACKEND!]
 echo ============================================================
 echo.
 
@@ -59,7 +87,45 @@ if not exist "%VENV_PYTHON%" (
 echo [OK]   Virtual environment found: %VENV_DIR%\
 
 
-:: ── SECTION 3: Ensure PyInstaller is installed ───────────────
+:: ── SECTION 3: Install correct onnxruntime variant ───────────
+::
+:: onnxruntime, onnxruntime-gpu, and onnxruntime-directml are
+:: mutually exclusive.  --upgrade ensures the right variant is
+:: active even if a different one was previously installed.
+
+echo.
+echo [INFO]  Installing onnxruntime variant for backend: !GPU_BACKEND!...
+
+if /I "!GPU_BACKEND!"=="directml" (
+    "%VENV_PYTHON%" -m pip install onnxruntime-directml --upgrade
+    if errorlevel 1 (
+        echo [ERROR] Failed to install onnxruntime-directml.
+        pause
+        exit /b 1
+    )
+    echo [OK]   onnxruntime-directml installed.
+) else if /I "!GPU_BACKEND!"=="cuda" (
+    echo [NOTE]  CUDA build requires CUDA Toolkit 12.x + cuDNN installed system-wide.
+    echo         Without them the app will silently fall back to CPU at runtime.
+    "%VENV_PYTHON%" -m pip install "onnxruntime-gpu[cuda,cudnn]" --upgrade
+    if errorlevel 1 (
+        echo [ERROR] Failed to install onnxruntime-gpu.
+        pause
+        exit /b 1
+    )
+    echo [OK]   onnxruntime-gpu installed.
+) else (
+    "%VENV_PYTHON%" -m pip install onnxruntime --upgrade
+    if errorlevel 1 (
+        echo [ERROR] Failed to install onnxruntime.
+        pause
+        exit /b 1
+    )
+    echo [OK]   onnxruntime ^(CPU^) installed.
+)
+
+
+:: ── SECTION 4: Ensure PyInstaller is installed ───────────────
 ::
 :: We try to import PyInstaller from the venv.  If that fails we
 :: install it via pip before proceeding.  This makes the script
@@ -81,13 +147,13 @@ if errorlevel 1 (
 )
 
 
-:: ── SECTION 4: Clean previous build artefacts ────────────────
+:: ── SECTION 5: Clean previous build artefacts ────────────────
 ::
 :: PyInstaller writes two directories:
-::   build\ImageManager\   — intermediate work files (.toc, .pkg, .exe stubs)
-::                           Safe to delete; PyInstaller regenerates them.
-::   dist\ImageManager\    — the final distributable folder
-::                           Cleaned so stale DLLs from old runs don't linger.
+::   build\ImageManager\                 — intermediate work files (.toc, .pkg, .exe stubs)
+::                                         Safe to delete; PyInstaller regenerates them.
+::   dist\ImageManager!DIST_SUFFIX!\     — the final distributable folder
+::                                         Cleaned so stale DLLs from old runs don't linger.
 ::
 :: We only remove the ImageManager sub-folders, not the entire build\ or
 :: dist\ trees — our spec/hook files in build\ are left untouched.
@@ -99,25 +165,22 @@ if exist "build\ImageManager" (
     rmdir /s /q "build\ImageManager"
     echo [OK]   Removed build\ImageManager\
 )
-if exist "dist\ImageManager" (
-    rmdir /s /q "dist\ImageManager"
-    echo [OK]   Removed dist\ImageManager\
+if exist "dist\ImageManager!DIST_SUFFIX!" (
+    rmdir /s /q "dist\ImageManager!DIST_SUFFIX!"
+    echo [OK]   Removed dist\ImageManager!DIST_SUFFIX!\
 )
 
 
-:: ── SECTION 5: Run PyInstaller ───────────────────────────────
+:: ── SECTION 6: Run PyInstaller ───────────────────────────────
 ::
 :: Flags used:
 ::   build\ImageManager.spec  — spec file inside the build\ folder
 ::   --distpath dist          — put the distributable folder under dist\
 ::   --workpath build         — put intermediate files under build\ImageManager\
-::                              (a subfolder, won't touch our spec/hook files)
 ::   --noconfirm              — overwrite dist\ImageManager\ without asking
 ::
-:: We call python -m PyInstaller rather than pyinstaller.exe directly —
-:: it is more reliable when the venv Scripts folder is not on PATH.
-::
-:: PyInstaller exits with code 0 on success, non-zero on failure.
+:: After a successful build, rename dist\ImageManager\ to dist\ImageManager-<suffix>\
+:: if a GPU backend was selected.
 
 echo.
 echo [INFO]  Running PyInstaller...
@@ -137,15 +200,21 @@ if errorlevel 1 (
     exit /b 1
 )
 
+if not "!DIST_SUFFIX!"=="" (
+    if exist "dist\ImageManager" (
+        move "dist\ImageManager" "dist\ImageManager!DIST_SUFFIX!"
+        echo [OK]   Renamed dist\ImageManager\ to dist\ImageManager!DIST_SUFFIX!\
+    )
+)
 
-:: ── SECTION 6: Verify output ─────────────────────────────────
+
+:: ── SECTION 7: Verify output ─────────────────────────────────
 ::
 :: A quick sanity-check: confirm that ImageManager.exe actually appeared.
-:: If it is missing something went wrong silently.
 
-if not exist "dist\ImageManager\ImageManager.exe" (
+if not exist "dist\ImageManager!DIST_SUFFIX!\ImageManager.exe" (
     echo.
-    echo [ERROR] dist\ImageManager\ImageManager.exe was not created.
+    echo [ERROR] dist\ImageManager!DIST_SUFFIX!\ImageManager.exe was not created.
     echo         PyInstaller reported success but the exe is missing.
     echo         Check the build log above for warnings.
     echo.
@@ -154,21 +223,26 @@ if not exist "dist\ImageManager\ImageManager.exe" (
 )
 
 
-:: ── SECTION 7: Done ──────────────────────────────────────────
+:: ── SECTION 8: Done ──────────────────────────────────────────
 
 echo.
 echo ============================================================
-echo   Build complete!
+echo   Build complete!  [GPU backend: !GPU_BACKEND!]
 echo.
 echo   Distributable folder:
-echo     dist\ImageManager\
+echo     dist\ImageManager!DIST_SUFFIX!\
 echo.
 echo   Run the app:
-echo     dist\ImageManager\ImageManager.exe
+echo     dist\ImageManager!DIST_SUFFIX!\ImageManager.exe
 echo.
-echo   To distribute: copy the entire dist\ImageManager\ folder.
+echo   To distribute: copy the entire dist\ImageManager!DIST_SUFFIX!\ folder.
 echo   The WD14 ONNX model will download on first launch
 echo   (~400 MB) to %%USERPROFILE%%\.cache\huggingface\
+if /I "!GPU_BACKEND!"=="cuda" (
+    echo.
+    echo   [CUDA] End users must have CUDA Toolkit 12.x + cuDNN installed.
+    echo          Without them, tagging will silently fall back to CPU.
+)
 echo ============================================================
 echo.
 pause
